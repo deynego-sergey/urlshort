@@ -34,7 +34,6 @@ type ILinkRepository interface {
 	IInitDatabaseRepository
 	IRedirectorLinksRepository
 	IManegeLinksRepository
-
 	IBatchManageLinksRepository
 }
 
