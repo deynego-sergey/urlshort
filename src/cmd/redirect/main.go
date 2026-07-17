@@ -47,7 +47,7 @@ func main() {
 		// Ищем в кэше, если нет — в Supabase
 		originalURL, ok := resolver.Get(id)
 		if !ok {
-			if l, err := repo.GetByUeserID(r.Context(), id); err == nil {
+			if l, err := repo.GetLinkByID(r.Context(), id); err == nil {
 				if !l.IsDeleted {
 					resolver.Put(id, l.OriginalURL)
 					http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
