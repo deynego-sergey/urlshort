@@ -122,7 +122,7 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, username string)
 			// В нашей логике отдадим ошибку, но на хэндлере замаскируем.
 			return "", errors.New("user not found")
 		}
-		return nil, err
+		return "", err
 	}
 
 	rawToken := "reset_" + generateRandomString(32)
