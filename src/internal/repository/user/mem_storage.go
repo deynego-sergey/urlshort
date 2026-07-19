@@ -1,6 +1,8 @@
+// src/internal/repository/user/mem_storage.go
 package user
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -17,10 +19,10 @@ type SessionMemoryStorage struct {
 }
 
 // NewSessionMemoryStorage — тот самый конструктор, который мы вызываем в main.go
-func NewSessionMemoryStorage() *SessionMemoryStorage {
+func NewSessionMemoryStorage(ctx context.Context) *SessionMemoryStorage {
 	s := &SessionMemoryStorage{}
 	// Фоновая очистка мертвых токенов раз в 5 минут
-	go s.startGC(5 * time.Minute)
+	go s.startGC(ctx, 5*time.Minute)
 	return s
 }
 
@@ -50,16 +52,24 @@ func (s *SessionMemoryStorage) Delete(refreshHash string) {
 	s.storage.Delete(refreshHash)
 }
 
-func (s *SessionMemoryStorage) startGC(interval time.Duration) {
+func (s *SessionMemoryStorage) startGC(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
-	for range ticker.C {
-		now := time.Now()
-		s.storage.Range(func(key, value any) bool {
-			session := value.(MemorySession)
-			if now.After(session.ExpiresAt) {
-				s.storage.Delete(key)
-			}
-			return true
-		})
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Приложение останавливается, прекращаем работу GC
+			return
+		case <-ticker.C:
+			now := time.Now()
+			s.storage.Range(func(key, value any) bool {
+				session := value.(MemorySession)
+				if now.After(session.ExpiresAt) {
+					s.storage.Delete(key)
+				}
+				return true
+			})
+		}
 	}
 }

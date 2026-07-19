@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"urlshort/internal/repository/link"
 	"urlshort/internal/services/auth"
 )
 
@@ -21,8 +23,7 @@ type RESTResponse struct {
 	Data   json.RawMessage `json:"data,omitempty"`
 }
 
-// Интерфейс для инжекции AuthService в слой обработчиков
-
+// AuthServiceInterface описывает контракт со слоем бизнес-логики авторизации
 type AuthServiceInterface interface {
 	Login(ctx context.Context, username, password string) (*auth.TokenPair, error)
 	Refresh(ctx context.Context, rawRefreshToken string) (*auth.TokenPair, error)
@@ -30,10 +31,14 @@ type AuthServiceInterface interface {
 
 type InternalHandler struct {
 	authService AuthServiceInterface
+	linkRepo    link.ILinkRepository
 }
 
-func NewInternalHandler(as AuthServiceInterface) *InternalHandler {
-	return &InternalHandler{authService: as}
+func NewInternalHandler(as AuthServiceInterface, lr link.ILinkRepository) *InternalHandler {
+	return &InternalHandler{
+		authService: as,
+		linkRepo:    lr,
+	}
 }
 
 func (h *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +117,40 @@ func (h *InternalHandler) handleRefresh(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *InternalHandler) routeProtectedAction(w http.ResponseWriter, ctx context.Context, userID int64, action string, payload json.RawMessage) {
-	h.sendSuccess(w, map[string]any{"action": action, "user_id": userID})
+	var (
+		res any
+		err error
+	)
+
+	switch action {
+	case "link:create_batch":
+		handler := NewCreateBatchHandler(h.linkRepo)
+		res, err = handler.Execute(ctx, userID, payload)
+
+	case "link:list":
+		handler := NewListLinksHandler(h.linkRepo)
+		res, err = handler.Execute(ctx, userID, payload)
+
+	// Будущие экшены добавятся сюда без изменения общей логики роутера:
+	// case "link:update_batch":
+	// case "link:delete_batch":
+
+	default:
+		h.sendError(w, http.StatusBadRequest, "unknown protected action")
+		return
+	}
+
+	if err != nil {
+		// Если ошибка содержит маркер bad_request (из h.repo или валидации), отдаем 400
+		if errors.Is(err, errors.New("bad_request")) || fmt.Sprintf("%v", err) == "bad_request" {
+			h.sendError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.sendError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	h.sendSuccess(w, res)
 }
 
 func (h *InternalHandler) setRefreshCookie(w http.ResponseWriter, token string) {

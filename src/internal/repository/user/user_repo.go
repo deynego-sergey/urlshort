@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -14,6 +15,7 @@ type User struct {
 }
 
 type IUserRepository interface {
+	CreateTable(ctx context.Context) error
 	CreateUser(ctx context.Context, username, passwordHash string) (int64, error)
 	GetByUsername(ctx context.Context, username string) (*User, error)
 }
@@ -28,6 +30,25 @@ func NewUserRepository(pool *pgxpool.Pool) IUserRepository {
 		pool:    pool,
 		builder: squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar),
 	}
+}
+
+func (r *userRepository) CreateTable(ctx context.Context) error {
+	query := `
+		CREATE TABLE IF NOT EXISTS public.users (
+			id BIGSERIAL PRIMARY KEY,
+			username VARCHAR(255) NOT NULL UNIQUE,
+			password_hash TEXT NOT NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+		);
+
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON public.users(username);
+	`
+
+	_, err := r.pool.Exec(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to initialize users table: %w", err)
+	}
+	return nil
 }
 
 func (r *userRepository) CreateUser(ctx context.Context, username, passwordHash string) (int64, error) {
@@ -58,7 +79,7 @@ func (r *userRepository) GetByUsername(ctx context.Context, username string) (*U
 	var u User
 	err = r.pool.QueryRow(ctx, sqlStr, args...).Scan(&u.ID, &u.Username, &u.PasswordHash)
 	if err != nil {
-		return nil, err // Вернет pgx.ErrNoRows, если не найден
+		return nil, err
 	}
 	return &u, nil
 }

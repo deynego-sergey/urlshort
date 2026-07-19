@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/Masterminds/squirrel"
@@ -16,6 +17,7 @@ type UserSession struct {
 }
 
 type ISessionRepository interface {
+	CreateTable(ctx context.Context) error
 	CreateSession(ctx context.Context, userID int64, refreshHash string, duration time.Duration) error
 	GetSessionByHash(ctx context.Context, refreshHash string) (*UserSession, error)
 	DeleteSession(ctx context.Context, refreshHash string) error
@@ -31,6 +33,26 @@ func NewSessionRepository(pool *pgxpool.Pool) ISessionRepository {
 		pool:    pool,
 		builder: squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar),
 	}
+}
+
+func (r *sessionRepository) CreateTable(ctx context.Context) error {
+	query := `
+		CREATE TABLE IF NOT EXISTS public.user_sessions (
+			id BIGSERIAL PRIMARY KEY,
+			user_id BIGINT NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+			refresh_hash VARCHAR(64) NOT NULL UNIQUE,
+			expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+			created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
+		);
+
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_hash ON public.user_sessions(refresh_hash);
+	`
+
+	_, err := r.pool.Exec(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to initialize user_sessions table: %w", err)
+	}
+	return nil
 }
 
 func (r *sessionRepository) CreateSession(ctx context.Context, userID int64, refreshHash string, duration time.Duration) error {
