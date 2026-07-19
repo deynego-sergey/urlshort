@@ -112,7 +112,7 @@ func (h *InternalHandler) handleRefresh(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *InternalHandler) routeProtectedAction(w http.ResponseWriter, ctx context.Context, userID int64, action string, payload json.RawMessage) {
-	h.sendSuccess(w, map[string]interface{}{"action": action, "user_id": userID})
+	h.sendSuccess(w, map[string]any{"action": action, "user_id": userID})
 }
 
 func (h *InternalHandler) setRefreshCookie(w http.ResponseWriter, token string) {
@@ -144,7 +144,7 @@ func (h *InternalHandler) sendError(w http.ResponseWriter, code int, msg string)
 	_ = json.NewEncoder(w).Encode(RESTResponse{Status: "error", Error: msg})
 }
 
-func (h *InternalHandler) sendSuccess(w http.ResponseWriter, data interface{}) {
+func (h *InternalHandler) sendSuccess(w http.ResponseWriter, data any) {
 	raw, _ := json.Marshal(data)
 	_ = json.NewEncoder(w).Encode(RESTResponse{Status: "success", Data: raw})
 }

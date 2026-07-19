@@ -54,7 +54,7 @@ func (s *SessionMemoryStorage) startGC(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	for range ticker.C {
 		now := time.Now()
-		s.storage.Range(func(key, value interface{}) bool {
+		s.storage.Range(func(key, value any) bool {
 			session := value.(MemorySession)
 			if now.After(session.ExpiresAt) {
 				s.storage.Delete(key)

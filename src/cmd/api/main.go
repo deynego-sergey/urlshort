@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"urlshort/cmd/api/handlers"
 	"urlshort/internal/repository/user"
@@ -16,6 +17,9 @@ func main() {
 	// Инициализируем пул базы данных (параметры берутся из окружения)
 	// !!! set env var "DATABASE_URL"
 	pool, err := pg.InitSupabasePool(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
 	//pool, _ := pgxpool.New(context.Background(), "postgres://user:pass@localhost:5432/db")
 	//defer pool.Close()
 
