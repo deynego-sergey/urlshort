@@ -24,7 +24,7 @@ type RESTResponse struct {
 	Data   json.RawMessage `json:"data,omitempty"`
 }
 
-type AuthServiceInterface interface {
+type IAuthServiceInterface interface {
 	Login(ctx context.Context, username, password string) (*auth.TokenPair, error)
 	Refresh(ctx context.Context, rawRefreshToken string) (*auth.TokenPair, error)
 	Register(ctx context.Context, username, password string) (string, error)
@@ -34,11 +34,11 @@ type AuthServiceInterface interface {
 }
 
 type InternalHandler struct {
-	authService AuthServiceInterface
+	authService IAuthServiceInterface
 	linkRepo    link.ILinkRepository
 }
 
-func NewInternalHandler(as AuthServiceInterface, lr link.ILinkRepository) *InternalHandler {
+func NewInternalHandler(as IAuthServiceInterface, lr link.ILinkRepository) *InternalHandler {
 	return &InternalHandler{
 		authService: as,
 		linkRepo:    lr,
