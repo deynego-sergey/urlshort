@@ -4,15 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/go-playground/validator/v10"
 	"urlshort/internal/repository/link"
 	"urlshort/internal/services/auth"
+
+	"github.com/go-playground/validator"
 )
 
 // AuthServiceInterface описывает контракт со слоем бизнес-логики аутентификации
