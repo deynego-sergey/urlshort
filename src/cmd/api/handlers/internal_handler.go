@@ -33,21 +33,21 @@ type RequestEnvelope struct {
 
 // Декларативные DTO для публичных экшенов безопасности
 type RegisterDTO struct {
-	Username string `json:"username" validate:"required,min=3,max=50,alphanum"`
+	Username string `json:"username" validate:"required,email,max=100"`
 	Password string `json:"password" validate:"required,min=6,max=100"`
 }
 
-type ConfirmDTO struct {
-	Token string `json:"token" validate:"required,min=10,max=100"`
-}
-
 type LoginDTO struct {
-	Username string `json:"username" validate:"required"`
+	Username string `json:"username" validate:"required,email"`
 	Password string `json:"password" validate:"required"`
 }
 
 type RequestResetDTO struct {
-	Username string `json:"username" validate:"required,min=3,max=50"`
+	Username string `json:"username" validate:"required,email,max=100"`
+}
+
+type ConfirmDTO struct {
+	Token string `json:"token" validate:"required,min=10,max=100"`
 }
 
 type ResetPasswordDTO struct {
