@@ -9,100 +9,86 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"urlshort/pkg/database/pg"
 
 	"urlshort/cmd/api/handlers"
 	"urlshort/internal/repository/link"
 	"urlshort/internal/repository/user"
 	"urlshort/internal/services/auth"
-	"urlshort/pkg/database/pg"
+	"urlshort/internal/services/notification"
+	// Подключаем наш пакет работы с базой данных
 )
 
 func main() {
-	// Создаем базовый контекст приложения для каскадного управления ресурсами
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	log.Println("Starting API server...")
 
-	// Инициализируем пул базы данных (параметры конфигурации берутся строго из окружения)
-	// !!! Обязательно должна быть установлена переменная окружения "DATABASE_URL"
-	pool, err := pg.InitSupabasePool(ctx)
+	// 1. Контекст, завязанный напрямую на системные сигналы прерывания
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// 2. Инициализация пула Supabase строго по нашей логике
+	pool := pg.InitSupabasePool()
+	defer pool.Close()
+
+	// 3. Инициализация слоя уведомлений
+	emailCfg, err := notification.LoadEmailConfigFromEnv()
 	if err != nil {
-		log.Fatalf("[FATAL] Failed to initialize Supabase pool: %v", err)
+		log.Fatalf("Critical boot error: %v", err)
 	}
 
-	// 1. Инициализируем Слой Данных (Repositories)
+	senders := map[notification.TargetType]notification.INotificationSender{
+		notification.TargetEmail: notification.NewEmailSender(emailCfg),
+	}
+	notificationService := notification.NewNotificationService(senders)
+
+	// 4. Инициализация репозиториев (Передаем пул, получаем строго одну структуру)
 	userRepo := user.NewUserRepository(pool)
 	sessionRepo := user.NewSessionRepository(pool)
+	linkRepo := link.NewLinkRepository(pool)
 
-	// Передаем контекст приложения в MemoryStorage, чтобы фоновый GC завершался вместе с сервером
-	memStorage := user.NewSessionMemoryStorage(ctx)
+	// Потокобезопасный in-memory кэш сессий, привязанный к сигнальному контексту
+	sessionMemory := user.NewSessionMemoryStorage(ctx)
 
-	// Инициализируем репозиторий ссылок
-	linkRepo, err := link.NewLinkRepository(ctx)
-	if err != nil {
-		log.Fatalf("[FATAL] Failed to initialize link repository: %v", err)
+	// 5. Инициализация AuthService
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET environment variable is required")
 	}
+	authService := auth.NewAuthService(userRepo, sessionRepo, sessionMemory, notificationService, jwtSecret)
 
-	// Автоматическое создание таблиц при старте (Миграция структур)
-	log.Println("[INFO] Initializing database schemas...")
-	if err := userRepo.CreateTable(ctx); err != nil {
-		log.Fatalf("[FATAL] Users schema init failed: %v", err)
-	}
-	if err := sessionRepo.CreateTable(ctx); err != nil {
-		log.Fatalf("[FATAL] Sessions schema init failed: %v", err)
-	}
-	if err := linkRepo.CreateTable(ctx); err != nil {
-		log.Fatalf("[FATAL] Links schema init failed: %v", err)
-	}
-	log.Println("[INFO] Database schemas are up to date.")
-
-	// 2. Инициализируем Слой Бизнес-логики (Service), внедряя репозитории через DI
-	// TODO: Заменить "YOUR_JWT_SECRET_KEY" на реальный секрет, загружаемый из окружения
-	authService := auth.NewAuthService(userRepo, sessionRepo, memStorage, "YOUR_JWT_SECRET_KEY")
-
-	// 3. Инициализируем Слой Представления (Handlers), внедряя зависимости
+	// 6. Маршрутизация через единый InternalHandler
 	internalHandler := handlers.NewInternalHandler(authService, linkRepo)
 
-	// Настраиваем мультиплексор для работы за NGINX
 	mux := http.NewServeMux()
 	mux.Handle("/v1/internal", internalHandler)
 
-	// Создаем сервер явным образом для управления процессом Shutdown
 	server := &http.Server{
-		Addr:    ":8080",
-		Handler: mux,
+		Addr:         ":8080",
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	}
 
-	// Каналы для перехвата системных сигналов прерывания (терминал, systemd, NGINX)
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-
-	// Запуск HTTP-сервера в отдельной горутине, чтобы не блокировать основной поток ожидания сигналов
+	// 7. Запуск HTTP сервера
 	go func() {
-		log.Println("[INFO] Server is starting on :8080...")
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("[FATAL] Server failed to start: %v", err)
+			log.Fatalf("Server listen failed: %v", err)
 		}
 	}()
+	log.Println("Server is running on port :8080")
 
-	// Блокируемся здесь и ждем сигнал остановки от операционной системы
-	sig := <-sigChan
-	log.Printf("[INFO] Received signal: %v. Initiating graceful shutdown...", sig)
+	// 8. Ожидаем системного сигнала прерывания (блокировка)
+	<-ctx.Done()
 
-	// Выделяем жесткий таймаут в 5 секунд на завершение текущих активных сетевых запросов клиентов
+	log.Println("Shutting down server...")
+
+	// Жесткий таймаут на закрытие сетевых соединений (5 секунд)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[ERROR] HTTP server Shutdown failed: %v", err)
-	} else {
-		log.Println("[INFO] HTTP server stopped cleanly.")
+		log.Fatalf("Server forced to shutdown: %v", err)
 	}
 
-	// Отменяем корневой контекст приложения — останавливаем фоновые горутины (включая GC в memStorage)
-	cancel()
-
-	// Закрываем физический пул соединений PostgreSQL к Supabase строго после остановки хендлеров
-	log.Println("[INFO] Closing database connection pool...")
-	pool.Close()
-	log.Println("[INFO] Database pool connection closed. Shutdown complete.")
+	log.Println("Server gracefully stopped.")
 }

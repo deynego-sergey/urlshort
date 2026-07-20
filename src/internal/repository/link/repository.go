@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"urlshort/pkg/database/pg"
 
 	"github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5"
@@ -69,16 +68,12 @@ type repository struct {
 	builder       squirrel.StatementBuilderType
 }
 
-func NewLinkRepository(ctx context.Context) (ILinkRepository, error) {
-	var pool *pgxpool.Pool
-	var err error
-	if pool, err = pg.InitSupabasePool(ctx); err != nil {
-		return nil, err
-	}
+func NewLinkRepository(pool *pgxpool.Pool) ILinkRepository {
+
 	return &repository{
 		Pool:    pool,
 		builder: squirrel.StatementBuilder.PlaceholderFormat(squirrel.Dollar),
-	}, nil
+	}
 }
 
 func (r *repository) CreateTable(ctx context.Context) error {
