@@ -9,14 +9,13 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-	"urlshort/pkg/database/pg"
 
 	"urlshort/cmd/api/handlers"
 	"urlshort/internal/repository/link"
 	"urlshort/internal/repository/user"
 	"urlshort/internal/services/auth"
 	"urlshort/internal/services/notification"
-	// Подключаем наш пакет работы с базой данных
+	"urlshort/pkg/database/pg"
 )
 
 func main() {
@@ -26,8 +25,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// 2. Инициализация пула Supabase строго по нашей логике
-	pool := pg.InitSupabasePool()
+	// 2. Инициализация пула Supabase с передачей контекста и обработкой ошибки
+	pool, err := pg.InitSupabasePool(ctx)
+	if err != nil {
+		log.Fatalf("Critical: failed to initialize database pool: %v", err)
+	}
 	defer pool.Close()
 
 	// 3. Инициализация слоя уведомлений
@@ -41,7 +43,7 @@ func main() {
 	}
 	notificationService := notification.NewNotificationService(senders)
 
-	// 4. Инициализация репозиториев (Передаем пул, получаем строго одну структуру)
+	// 4. Инициализация репозиториев (передаем готовый pool)
 	userRepo := user.NewUserRepository(pool)
 	sessionRepo := user.NewSessionRepository(pool)
 	linkRepo := link.NewLinkRepository(pool)
