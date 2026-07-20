@@ -1,75 +1,90 @@
-// src/cmd/api/handlers/links_handler.go
 package handlers
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"net/url"
+	"net/http"
+	"strings"
+
 	"urlshort/internal/repository/link"
 )
 
-// Нам нужен интерфейс репозитория, с которым будет работать экшен.
-// Используем DI для его внедрения.
-type BatchCreatorRepository interface {
-	CreateBatch(ctx context.Context, links []*link.ShortLink) ([]*link.ShortLink, error)
+// Декларативные DTO для входящих JSON-запросов
+type CreateLinkItem struct {
+	OriginalURL string `json:"original_url" validate:"required,url"`
 }
 
-type CreateBatchHandler struct {
-	repo BatchCreatorRepository // Внедрение зависимости (DI)
-}
-
-func NewCreateBatchHandler(repo BatchCreatorRepository) *CreateBatchHandler {
-	return &CreateBatchHandler{repo: repo}
-}
-
-// Входной Payload для экшена link:create_batch
 type CreateBatchPayload struct {
-	URLs []string `json:"urls"`
+	Items []CreateLinkItem `json:"items" validate:"required,dive,min=1,max=100"`
 }
 
-// Ответ, который мы вернем в случае успеха
-type CreateBatchResponse struct {
-	Links []*link.ShortLink `json:"links"`
-}
-
-func (h *CreateBatchHandler) Execute(ctx context.Context, userID int64, payload json.RawMessage) (any, error) {
-	var req CreateBatchPayload
-	if err := json.Unmarshal(payload, &req); err != nil {
-		return nil, fmt.Errorf("failed to parse payload: %w", errors.New("bad_request"))
+func (h *InternalHandler) handleCreateBatch(w http.ResponseWriter, r *http.Request, payload json.RawMessage) {
+	// 1. Проверка авторизации через контекст
+	userID, ok := r.Context().Value("userID").(int64)
+	if !ok || userID <= 0 {
+		h.sendError(w, http.StatusUnauthorized, "unauthorized: invalid session or missing token")
+		return
 	}
 
-	// Жесткая валидация входных данных (Безопасность)
-	if len(req.URLs) == 0 {
-		return nil, errors.New("urls array cannot be empty")
-	}
-	if len(req.URLs) > 100 { // Защита от перегрузки пула/базы (DDOS)
-		return nil, errors.New("batch size cannot exceed 100 urls")
-	}
-
-	var linksToCreate []*link.ShortLink
-
-	for _, rawURL := range req.URLs {
-		// Валидация корректности URL перед сохранением в базу
-		parsedURL, err := url.ParseRequestURI(rawURL)
-		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-			return nil, fmt.Errorf("invalid url format: %s", rawURL)
-		}
-
-		linksToCreate = append(linksToCreate, &link.ShortLink{
-			OriginalURL: rawURL,
-			UserID:      userID,
-			// ID и CreatedAt/UpdatedAt назначит база данных через RETURNING
-		})
-	}
-
-	// Вызов слоя данных
-	createdLinks, err := h.repo.CreateBatch(ctx, linksToCreate)
+	// 2. Валидация входных данных
+	dto, err := parseAndValidate[CreateBatchPayload](h, payload)
 	if err != nil {
-		// Логируем реальную ошибку на сервере, а клиенту отдаем безопасный текст
-		return nil, fmt.Errorf("failed to save batch to storage: %w", err)
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
-	return CreateBatchResponse{Links: createdLinks}, nil
+	// 3. Маппинг DTO в слайс моделей репозитория link.ShortLink
+	// Мы создаем структуры, которые ожидает CreateBatch вместо сырых строк
+	linksInput := make([]*link.ShortLink, len(dto.Items))
+	for i, item := range dto.Items {
+		linksInput[i] = &link.ShortLink{
+			UserID:      userID,
+			OriginalURL: strings.TrimSpace(item.OriginalURL),
+		}
+	}
+
+	// Вызов репозитория с корректным типом []*ShortLink
+	createdLinks, err := h.linkRepo.CreateBatch(r.Context(), linksInput)
+	if err != nil {
+		h.sendError(w, http.StatusInternalServerError, "failed to create links batch")
+		return
+	}
+
+	h.sendSuccess(w, map[string]any{"links": createdLinks})
+}
+
+func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, payload json.RawMessage) {
+	userID, ok := r.Context().Value("userID").(int64)
+	if !ok || userID <= 0 {
+		h.sendError(w, http.StatusUnauthorized, "unauthorized: invalid session")
+		return
+	}
+
+	dto, err := parseAndValidate[ListLinksPayload](h, payload)
+	if err != nil {
+		h.sendError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Готовим указатель на строку для фильтра репозитория
+	var searchPtr *string
+	if dto.Search != nil {
+		cleaned := strings.TrimSpace(*dto.Search)
+		searchPtr = &cleaned
+	}
+
+	// Упаковка параметров в объект фильтра LinkFilter с передачей указателя *string
+	filter := link.LinkFilter{
+		UserID:    userID,
+		Search:    searchPtr, // Теперь типы (*string) идеально совпадают
+		IsDeleted: dto.IsDeleted,
+	}
+
+	// Вызов репозитория с передачей фильтра
+	links, err := h.linkRepo.List(r.Context(), filter)
+	if err != nil {
+		h.sendError(w, http.StatusInternalServerError, "failed to retrieve links")
+		return
+	}
+
+	h.sendSuccess(w, map[string]any{"links": links})
 }
