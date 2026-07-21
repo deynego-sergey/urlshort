@@ -191,6 +191,7 @@ func (r *repository) Create(ctx context.Context, originalURL string, userID int6
 	return &link, nil
 }
 
+// UpdateURL - update target url
 func (r *repository) UpdateURL(ctx context.Context, id int64, userID int64, newURL string) error {
 	query, args, err := r.builder.
 		Update("short_links").
@@ -215,6 +216,7 @@ func (r *repository) UpdateURL(ctx context.Context, id int64, userID int64, newU
 	return nil
 }
 
+// SoftDelete - soft delete link (deactivate)
 func (r *repository) SoftDelete(ctx context.Context, id int64, userID int64) error {
 	query, args, err := r.builder.
 		Update("short_links").

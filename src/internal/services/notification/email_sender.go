@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/smtp"
 	"os"
+	"strings"
 )
 
 // EmailConfig инкапсулирует настройки, считываемые из переменных окружения
@@ -14,6 +15,7 @@ type EmailConfig struct {
 	Port     string
 	From     string
 	Password string
+	UserName string
 }
 
 // LoadEmailConfigFromEnv загружает переменные для работы с почтой
@@ -22,6 +24,7 @@ func LoadEmailConfigFromEnv() (*EmailConfig, error) {
 	port := os.Getenv("SMTP_PORT")
 	from := os.Getenv("SMTP_FROM")
 	pass := os.Getenv("SMTP_PASSWORD")
+	smtpusername := os.Getenv("SMTP_USERNAME")
 
 	// Если критические переменные не заданы, возвращаем ошибку при старте
 	if host == "" || port == "" || from == "" {
@@ -33,6 +36,7 @@ func LoadEmailConfigFromEnv() (*EmailConfig, error) {
 		Port:     port,
 		From:     from,
 		Password: pass,
+		UserName: smtpusername,
 	}, nil
 }
 
@@ -43,29 +47,32 @@ type EmailSender struct {
 func NewEmailSender(cfg *EmailConfig) INotificationSender {
 	return &EmailSender{config: cfg}
 }
-
 func (s *EmailSender) Send(ctx context.Context, n Notification) error {
-	// Базовая очистка и валидация перед отправкой
 	if n.Recipient == "" || n.Body == "" {
 		return fmt.Errorf("invalid notification payload: empty recipient or body")
 	}
 
-	msg := []byte("To: " + n.Recipient + "\r\n" +
+	if s.config.From == "" {
+		return fmt.Errorf("smtp send error: sender address (From) is empty")
+	}
+
+	msg := []byte("From: " + s.config.From + "\r\n" +
+		"To: " + n.Recipient + "\r\n" +
 		"Subject: " + n.Subject + "\r\n" +
+		"MIME-Version: 1.0\r\n" +
 		"Content-Type: text/plain; charset=UTF-8\r\n" +
 		"\r\n" +
 		n.Body + "\r\n")
 
 	addr := fmt.Sprintf("%s:%s", s.config.Host, s.config.Port)
 
-	// Если пароль пустой, работаем без аутентификации (например, локальный Mailpit/Mailhog для тестов)
 	var auth smtp.Auth
 	if s.config.Password != "" {
-		auth = smtp.PlainAuth("", s.config.From, s.config.Password, s.config.Host)
+		auth = smtp.PlainAuth("", s.config.UserName, s.config.Password, s.config.Host)
 	}
 
-	// Выполняем сетевой запрос отправки
-	err := smtp.SendMail(addr, auth, s.config.From, []string{n.Recipient}, msg)
+	// s.config.From должен быть строго в формате "user@domain.com"
+	err := smtp.SendMail(addr, auth, strings.TrimSpace(s.config.From), []string{n.Recipient}, msg)
 	if err != nil {
 		log.Printf("[ERROR] Failed to send email to %s: %v", n.Recipient, err)
 		return fmt.Errorf("smtp send error: %w", err)

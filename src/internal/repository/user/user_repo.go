@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/Masterminds/squirrel"
@@ -98,12 +99,14 @@ func (r *userRepository) GetByUsername(ctx context.Context, username string) (*U
 		Limit(1).
 		ToSql()
 	if err != nil {
+		log.Print(err)
 		return nil, err
 	}
 
 	var u User
 	err = r.pool.QueryRow(ctx, sqlStr, args...).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Status, &u.ConfirmationHash, &u.ResetPasswordHash, &u.ResetExpiresAt)
 	if err != nil {
+		log.Print(err)
 		return nil, err
 	}
 	return &u, nil
@@ -116,12 +119,14 @@ func (r *userRepository) GetByConfirmationHash(ctx context.Context, hash string)
 		Limit(1).
 		ToSql()
 	if err != nil {
+		log.Print(err)
 		return nil, err
 	}
 
 	var u User
 	err = r.pool.QueryRow(ctx, sqlStr, args...).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Status)
 	if err != nil {
+		log.Print(err)
 		return nil, err
 	}
 	return &u, nil
@@ -134,12 +139,14 @@ func (r *userRepository) GetByResetPasswordHash(ctx context.Context, hash string
 		Limit(1).
 		ToSql()
 	if err != nil {
+		log.Print(err)
 		return nil, err
 	}
 
 	var u User
 	err = r.pool.QueryRow(ctx, sqlStr, args...).Scan(&u.ID, &u.Username, &u.ResetExpiresAt)
 	if err != nil {
+		log.Print(err)
 		return nil, err
 	}
 	return &u, nil

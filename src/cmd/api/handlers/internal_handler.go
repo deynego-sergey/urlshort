@@ -1,284 +1,435 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
-	"time"
 
 	"urlshort/internal/repository/link"
 	"urlshort/internal/services/auth"
-
-	"github.com/go-playground/validator"
 )
 
-// AuthServiceInterface описывает контракт со слоем бизнес-логики аутентификации
-type AuthServiceInterface interface {
-	Login(ctx context.Context, username, password string) (*auth.TokenPair, error)
-	Refresh(ctx context.Context, rawRefreshToken string) (*auth.TokenPair, error)
-	Register(ctx context.Context, username, password string) (string, error)
-	ConfirmRegistration(ctx context.Context, rawToken string) error
-	RequestPasswordReset(ctx context.Context, username string) (string, error)
-	ResetPassword(ctx context.Context, rawToken, newPassword string) error
+// RequestRouter определяет структуру входящего JSON-запроса через WebSocket/HTTP
+type RequestRouter struct {
+	Action string          `json:"action"`
+	Data   json.RawMessage `json:"data"`
 }
 
-// Входящий JSON-конверт для маршрутизации
-type RequestEnvelope struct {
-	Action  string          `json:"action" validate:"required"`
-	Payload json.RawMessage `json:"payload"`
+// Структуры данных (Payloads) для авторизации
+type RegisterPayload struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
-// Декларативные DTO для публичных экшенов безопасности
-type RegisterDTO struct {
-	Username string `json:"username" validate:"required,email,max=100"`
-	Password string `json:"password" validate:"required,min=6,max=100"`
+type ConfirmPayload struct {
+	Token string `json:"token"`
 }
 
-type LoginDTO struct {
-	Username string `json:"username" validate:"required,email"`
-	Password string `json:"password" validate:"required"`
+type LoginPayload struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
-type RequestResetDTO struct {
-	Username string `json:"username" validate:"required,email,max=100"`
+type RefreshPayload struct {
+	RefreshToken string `json:"refresh_token"`
 }
 
-type ConfirmDTO struct {
-	Token string `json:"token" validate:"required,min=10,max=100"`
+type ResetRequestPayload struct {
+	Username string `json:"username"`
 }
 
-type ResetPasswordDTO struct {
-	Token       string `json:"token" validate:"required,min=10,max=100"`
-	NewPassword string `json:"new_password" validate:"required,min=6,max=100"`
+type ResetPasswordPayload struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
 }
 
-// InternalHandler является центральной точкой входа для WebSocket/HTTP JSON-сообщений
+// Структуры данных (Payloads) для управления ссылками
+type CreateLinkPayload struct {
+	OriginalURL string `json:"original_url"`
+}
+
+type DeleteLinkPayload struct {
+	ID string `json:"id"`
+}
+
+type CreateLinkItem struct {
+	OriginalURL string `json:"original_url"`
+}
+
+type CreateBatchPayload struct {
+	Items []CreateLinkItem `json:"items"`
+}
+
+type ListLinksPayload struct {
+	Search    *string `json:"search"`
+	IsDeleted *bool   `json:"is_deleted"`
+}
+
+// InternalHandler объединяет все сервисы и репозитории для маршрутизации JSON-команд
 type InternalHandler struct {
-	authService AuthServiceInterface
+	authService *auth.AuthService
 	linkRepo    link.ILinkRepository
-	validate    *validator.Validate
 }
 
-func NewInternalHandler(as AuthServiceInterface, lr link.ILinkRepository) *InternalHandler {
+func NewInternalHandler(as *auth.AuthService, lr link.ILinkRepository) *InternalHandler {
 	return &InternalHandler{
 		authService: as,
 		linkRepo:    lr,
-		validate:    validator.New(),
 	}
 }
 
+// ServeHTTP реализует обработку HTTP-запросов, дублируя логику маршрутизации WebSocket
 func (h *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	if r.Method != http.MethodPost {
-		h.sendError(w, http.StatusMethodNotAllowed, "method not allowed")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var env RequestEnvelope
-	if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
-		h.sendError(w, http.StatusBadRequest, "bad_request: invalid envelope JSON")
+	var router RequestRouter
+	if err := json.NewDecoder(r.Body).Decode(&router); err != nil {
+		http.Error(w, "Invalid JSON envelope", http.StatusBadRequest)
 		return
 	}
 
-	if err := h.validate.Struct(&env); err != nil {
-		h.sendError(w, http.StatusBadRequest, "bad_request: action is required")
-		return
-	}
+	w.Header().Set("Content-Type", "application/json")
 
-	// Маршрутизация экшенов
-	switch env.Action {
-	case "auth:register":
-		h.handleRegister(w, r.Context(), env.Payload)
-	case "auth:confirm":
-		h.handleConfirm(w, r.Context(), env.Payload)
-	case "auth:login":
-		h.handleLogin(w, r.Context(), env.Payload)
-	case "auth:refresh":
-		h.handleRefresh(w, r)
-	case "auth:request_reset":
-		h.handleRequestReset(w, r.Context(), env.Payload)
-	case "auth:reset_password":
-		h.handleResetPassword(w, r.Context(), env.Payload)
+	switch router.Action {
+	// Маршруты авторизации
+	case "auth.register":
+		h.handleRegister(w, r, router.Data)
+	case "auth.confirm":
+		h.handleConfirm(w, r, router.Data)
+	case "auth.login":
+		h.handleLogin(w, r, router.Data)
+	case "auth.refresh":
+		h.handleRefresh(w, r, router.Data)
+	case "auth.request_reset":
+		h.handleRequestReset(w, r, router.Data)
+	case "auth.reset_password":
+		h.handleResetPassword(w, r, router.Data)
 
-	// Защищенные роуты работы со ссылками (Вынесены в link_handlers.go)
-	case "link:create_batch":
-		h.handleCreateBatch(w, r, env.Payload)
-	case "link:list":
-		h.handleList(w, r, env.Payload)
+	// Маршруты управления ссылками
+	case "link.create":
+		h.handleCreateLink(w, r, router.Data)
+	case "link.delete":
+		h.handleDeleteLink(w, r, router.Data)
+	case "link.create_batch":
+		h.handleCreateBatch(w, r, router.Data)
+	case "link.list":
+		h.handleList(w, r, router.Data)
+	case "link.link":
+		h.handleUpdate(w, r, router.Data)
 
 	default:
-		h.sendError(w, http.StatusNotFound, "unknown action")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"unknown action"}`))
 	}
 }
 
-// Вспомогательный дженерик-метод для десериализации и валидации payload
-func parseAndValidate[T any](h *InternalHandler, data json.RawMessage) (*T, error) {
-	var dto T
-	if len(data) == 0 {
-		return nil, errors.New("bad_request: missing payload data")
-	}
-	if err := json.Unmarshal(data, &dto); err != nil {
-		return nil, errors.New("bad_request: invalid json structure")
-	}
-	if err := h.validate.Struct(&dto); err != nil {
-		return nil, errors.New("bad_request: validation failed")
-	}
-	return &dto, nil
-}
+// === ОБРАБОТЧИКИ АВТОРИЗАЦИИ ===
 
-// --- Реализация публичных хендлеров ---
-
-func (h *InternalHandler) handleRegister(w http.ResponseWriter, ctx context.Context, payload json.RawMessage) {
-	dto, err := parseAndValidate[RegisterDTO](h, payload)
-	if err != nil {
-		h.sendError(w, http.StatusBadRequest, err.Error())
+func (h *InternalHandler) handleRegister(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	var payload RegisterPayload
+	if err := json.Unmarshal(data, &payload); err != nil || payload.Username == "" || payload.Password == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
 		return
 	}
 
-	username := strings.TrimSpace(dto.Username)
-	confirmToken, err := h.authService.Register(ctx, username, dto.Password)
+	code, err := h.authService.Register(r.Context(), payload.Username, payload.Password)
 	if err != nil {
-		if errors.Is(err, auth.ErrUserAlreadyExit) {
-			h.sendError(w, http.StatusConflict, "username already taken")
+		w.WriteHeader(http.StatusBadRequest)
+		if errors.Is(err, auth.ErrUserAlreadyExist) {
+			_, _ = w.Write([]byte(`{"error":"user already exists"}`))
 			return
 		}
-		h.sendError(w, http.StatusInternalServerError, "internal server error")
+		log.Printf("[ERROR] Register failed: %v", err)
+		_, _ = w.Write([]byte(`{"error":"internal server error"}`))
 		return
 	}
 
-	log.Printf("[TEST ONLY] Confirmation token for %s: %s", username, confirmToken)
-	h.sendSuccess(w, map[string]string{"message": "registration initiated, confirmation required"})
-}
-
-func (h *InternalHandler) handleConfirm(w http.ResponseWriter, ctx context.Context, payload json.RawMessage) {
-	dto, err := parseAndValidate[ConfirmDTO](h, payload)
-	if err != nil {
-		h.sendError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	token := strings.TrimSpace(dto.Token)
-	if err := h.authService.ConfirmRegistration(ctx, token); err != nil {
-		h.sendError(w, http.StatusUnauthorized, "invalid or expired token")
-		return
-	}
-
-	h.sendSuccess(w, map[string]string{"message": "registration successfully confirmed"})
-}
-
-func (h *InternalHandler) handleLogin(w http.ResponseWriter, ctx context.Context, payload json.RawMessage) {
-	dto, err := parseAndValidate[LoginDTO](h, payload)
-	if err != nil {
-		h.sendError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	username := strings.TrimSpace(dto.Username)
-	tokens, err := h.authService.Login(ctx, username, dto.Password)
-	if err != nil {
-		if errors.Is(err, auth.ErrUserPending) {
-			h.sendError(w, http.StatusForbidden, "user registration is not confirmed")
-			return
-		}
-		h.sendError(w, http.StatusUnauthorized, "invalid credentials")
-		return
-	}
-
-	// Установка HTTP-Only Cookie для Refresh токена в целях безопасности
-	http.SetCookie(w, &http.Cookie{
-		Name:     "refresh_token",
-		Value:    tokens.RefreshToken,
-		Path:     "/v1/internal",
-		HttpOnly: true,
-		Secure:   true, // Включаем для HTTPS окружения
-		SameSite: http.SameSiteStrictMode,
-		Expires:  time.Now().Add(30 * 24 * time.Hour),
-	})
-
-	h.sendSuccess(w, map[string]string{"access_token": tokens.AccessToken})
-}
-
-func (h *InternalHandler) handleRefresh(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie("refresh_token")
-	if err != nil {
-		h.sendError(w, http.StatusUnauthorized, "missing refresh token")
-		return
-	}
-
-	tokens, err := h.authService.Refresh(r.Context(), cookie.Value)
-	if err != nil {
-		h.sendError(w, http.StatusUnauthorized, "access denied: session invalid")
-		return
-	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "refresh_token",
-		Value:    tokens.RefreshToken,
-		Path:     "/v1/internal",
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-		Expires:  time.Now().Add(30 * 24 * time.Hour),
-	})
-
-	h.sendSuccess(w, map[string]string{"access_token": tokens.AccessToken})
-}
-
-func (h *InternalHandler) handleRequestReset(w http.ResponseWriter, ctx context.Context, payload json.RawMessage) {
-	dto, err := parseAndValidate[RequestResetDTO](h, payload)
-	if err != nil {
-		h.sendError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	username := strings.TrimSpace(dto.Username)
-	resetToken, err := h.authService.RequestPasswordReset(ctx, username)
-	if err == nil {
-		log.Printf("[TEST ONLY] Reset token for %s: %s", username, resetToken)
-	}
-
-	// Маскируем ошибку для предотвращения перебора логинов (Безопасность)
-	h.sendSuccess(w, map[string]string{"message": "if user exists, instructions will be provided"})
-}
-
-func (h *InternalHandler) handleResetPassword(w http.ResponseWriter, ctx context.Context, payload json.RawMessage) {
-	dto, err := parseAndValidate[ResetPasswordDTO](h, payload)
-	if err != nil {
-		h.sendError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	token := strings.TrimSpace(dto.Token)
-	if err := h.authService.ResetPassword(ctx, token, dto.NewPassword); err != nil {
-		if errors.Is(err, auth.ErrTokenExpired) {
-			h.sendError(w, http.StatusBadRequest, "token expired")
-			return
-		}
-		h.sendError(w, http.StatusUnauthorized, "invalid token")
-		return
-	}
-
-	h.sendSuccess(w, map[string]string{"message": "password has been updated successfully"})
-}
-
-// Хелперы стандартизации ответов API
-func (h *InternalHandler) sendError(w http.ResponseWriter, code int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"code":    code,
-			"message": msg,
-		},
-	})
-}
-
-func (h *InternalHandler) sendSuccess(w http.ResponseWriter, data any) {
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"data": data,
-	})
+	_, _ = w.Write([]byte(`{"status":"success","message":"confirmation code sent","code":"` + code + `"}`))
+}
+
+func (h *InternalHandler) handleConfirm(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	var payload ConfirmPayload
+	if err := json.Unmarshal(data, &payload); err != nil || payload.Token == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		return
+	}
+
+	err := h.authService.ConfirmRegistration(r.Context(), payload.Token)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		log.Printf("[ERROR] Confirmation failed: %v", err)
+		_, _ = w.Write([]byte(`{"error":"invalid or expired confirmation token"}`))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"success","message":"account activated"}`))
+}
+// handleLogin
+func (h *InternalHandler) handleLogin(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	var payload LoginPayload
+	if err := json.Unmarshal(data, &payload); err != nil || payload.Username == "" || payload.Password == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		return
+	}
+
+	tokens, err := h.authService.Login(r.Context(), payload.Username, payload.Password)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		if errors.Is(err, auth.ErrUserPending) {
+			_, _ = w.Write([]byte(`{"error":"user registration pending confirmation"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"error":"invalid credentials"}`))
+		return
+	}
+
+	resp, _ := json.Marshal(tokens)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
+}
+
+func (h *InternalHandler) handleRefresh(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	var payload RefreshPayload
+	if err := json.Unmarshal(data, &payload); err != nil || payload.RefreshToken == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		return
+	}
+
+	tokens, err := h.authService.Refresh(r.Context(), payload.RefreshToken)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid or expired session"}`))
+		return
+	}
+
+	resp, _ := json.Marshal(tokens)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
+}
+
+func (h *InternalHandler) handleRequestReset(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	var payload ResetRequestPayload
+	if err := json.Unmarshal(data, &payload); err != nil || payload.Username == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		return
+	}
+
+	code, err := h.authService.RequestPasswordReset(r.Context(), payload.Username)
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"success","message":"if account exists, reset code sent"}`))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"success","message":"reset code sent","code":"` + code + `"}`))
+}
+
+func (h *InternalHandler) handleResetPassword(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	var payload ResetPasswordPayload
+	if err := json.Unmarshal(data, &payload); err != nil || payload.Token == "" || payload.NewPassword == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		return
+	}
+
+	err := h.authService.ResetPassword(r.Context(), payload.Token, payload.NewPassword)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		log.Printf("[ERROR] Reset password failed: %v", err)
+		_, _ = w.Write([]byte(`{"error":"invalid or expired reset token"}`))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"success","message":"password has been reset successfully"}`))
+}
+
+// === ОБРАБОТЧИКИ ССЫЛОК ===
+
+func (h *InternalHandler) handleCreateLink(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	var payload CreateLinkPayload
+	if err := json.Unmarshal(data, &payload); err != nil || payload.OriginalURL == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		return
+	}
+
+	userID, _ := r.Context().Value("userID").(int64)
+
+	shortLink, err := h.linkRepo.Create(r.Context(), payload.OriginalURL, userID)
+	if err != nil {
+		log.Printf("[ERROR] Failed to create link: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to create short link"}`))
+		return
+	}
+
+	resp, err := json.Marshal(shortLink)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
+}
+
+func (h *InternalHandler) handleDeleteLink(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	var payload DeleteLinkPayload
+	if err := json.Unmarshal(data, &payload); err != nil || payload.ID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		return
+	}
+
+	linkID, err := strconv.ParseInt(payload.ID, 10, 64)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid link id format"}`))
+		return
+	}
+
+	userID, _ := r.Context().Value("userID").(int64)
+
+	err = h.linkRepo.SoftDelete(r.Context(), linkID, userID)
+	if err != nil {
+		log.Printf("[ERROR] Failed to delete link: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to delete link"}`))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"success","message":"link deleted"}`))
+}
+
+// handleCreateBatch -
+func (h *InternalHandler) handleCreateBatch(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	userID, ok := r.Context().Value("userID").(int64)
+	if !ok || userID <= 0 {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid session or missing token"}`))
+		return
+	}
+
+	var dto CreateBatchPayload
+	if err := json.Unmarshal(data, &dto); err != nil || len(dto.Items) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		return
+	}
+
+	linksInput := make([]*link.ShortLink, len(dto.Items))
+	for i, item := range dto.Items {
+		linksInput[i] = &link.ShortLink{
+			UserID:      userID,
+			OriginalURL: strings.TrimSpace(item.OriginalURL),
+		}
+	}
+
+	createdLinks, err := h.linkRepo.CreateBatch(r.Context(), linksInput)
+	if err != nil {
+		log.Printf("[ERROR] Failed to create batch: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to create links batch"}`))
+		return
+	}
+
+	resp, err := json.Marshal(map[string]any{"links": createdLinks})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
+}
+
+// handleList -
+func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	userID, ok := r.Context().Value("userID").(int64)
+	if !ok || userID <= 0 {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid session"}`))
+		return
+	}
+
+	var dto ListLinksPayload
+	if err := json.Unmarshal(data, &dto); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		return
+	}
+
+	var searchPtr *string
+	if dto.Search != nil {
+		cleaned := strings.TrimSpace(*dto.Search)
+		searchPtr = &cleaned
+	}
+
+	filter := link.LinkFilter{
+		UserID:    userID,
+		Search:    searchPtr,
+		IsDeleted: dto.IsDeleted,
+	}
+
+	links, err := h.linkRepo.List(r.Context(), filter)
+	if err != nil {
+		log.Printf("[ERROR] Failed to list links: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to retrieve links"}`))
+		return
+	}
+
+	resp, err := json.Marshal(map[string]any{"links": links})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
+}
+
+func (h *InternalHandler) handleUpdate(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	userID, ok := r.Context().Value("userID").(int64)
+	if !ok || userID <= 0 {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid session"}`))
+		return
+	}
+	links := []*link.ShortLink{}
+	resp, err := json.Marshal(map[string]any{"links": links})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
+
 }

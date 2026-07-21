@@ -1,16 +1,16 @@
 ### Переменные окружения (задаются в http-client.env.json)
-@host = http://localhost:8080
-@username = testuser2026
-@password = SecurePassword123!
+#@host = http://localhost:8080
+#@username = testuser2026
+#@password = SecurePassword123!
 
 ### 1. Публичные операции: Регистрация нового пользователя
 POST {{host}}/v1/internal
 Content-Type: application/json
 
 {
-  "action": "auth:register",
-  "payload": {
-    "username": "{{username}}",
+  "action": "auth.register",
+  "data": {
+    "username": "wwwm@bk.ru",
     "password": "{{password}}"
   }
 }
@@ -21,40 +21,41 @@ POST {{host}}/v1/internal
 Content-Type: application/json
 
 {
-  "action": "auth:confirm",
-  "payload": {
-    "token": "confirm_замените_на_токен_из_логов"
+  "action": "auth.confirm",
+  "data": {
+    "token": "873023"
   }
 }
 
 ### 3. Публичные операции: Аутентификация (Вход)
-# Скрипт автоматически сохраняет полученный access_token в память клиента
 POST {{host}}/v1/internal
 Content-Type: application/json
 
 {
-  "action": "auth:login",
-  "payload": {
+  "action": "auth.login",
+  "data": {
     "username": "{{username}}",
     "password": "{{password}}"
   }
 }
 
 > {%
-    client.global.set("auth_token", response.body.data.access_token);
+    client.global.set("auth_token", response.body.access_token);
 %}
 
 ### 4. Публичные операции: Ротация сессии (Refresh)
-# Запрос автоматически отправит куку refresh_token, установленную при login
 POST {{host}}/v1/internal
 Content-Type: application/json
 
 {
-  "action": "auth:refresh"
+  "action": "auth.refresh",
+  "data": {
+    "refresh_token": "замените_на_refresh_token_если_не_используются_cookie"
+  }
 }
 
 > {%
-    client.global.set("auth_token", response.body.data.access_token);
+    client.global.set("auth_token", response.body.access_token);
 %}
 
 ### 5. Публичные операции: Запрос восстановления пароля
@@ -62,20 +63,19 @@ POST {{host}}/v1/internal
 Content-Type: application/json
 
 {
-  "action": "auth:request_reset",
-  "payload": {
+  "action": "auth.request_reset",
+  "data": {
     "username": "{{username}}"
   }
 }
 
 ### 6. Публичные операции: Сброс пароля по токену
-# Скопируйте token из логов консоли сервера
 POST {{host}}/v1/internal
 Content-Type: application/json
 
 {
-  "action": "auth:reset_password",
-  "payload": {
+  "action": "auth.reset_password",
+  "data": {
     "token": "reset_замените_на_токен_из_логов",
     "new_password": "NewSecurePassword2026!"
   }
@@ -83,8 +83,6 @@ Content-Type: application/json
 
 ### =================================================================
 ### Защищенные операции (Требуют Bearer Access Token)
-# Внимание: Убедитесь, что middleware в Go-приложении корректно парсит
-# заголовок Authorization и кладет userID в контекст запроса.
 
 ### 7. Защищенные операции: Массовое создание коротких ссылок
 POST {{host}}/v1/internal
@@ -92,15 +90,17 @@ Authorization: Bearer {{auth_token}}
 Content-Type: application/json
 
 {
-  "action": "link:create_batch",
-  "payload": [
-    {
-      "original_url": "https://google.com"
-    },
-    {
-      "original_url": "https://github.com/gotd/td"
-    }
-  ]
+  "action": "link.create_batch",
+  "data": {
+    "items": [
+      {
+        "original_url": "https://google.com"
+      },
+      {
+        "original_url": "https://github.com/gotd/td"
+      }
+    ]
+  }
 }
 
 ### 8. Защищенные операции: Получение списка ссылок пользователя
@@ -109,8 +109,8 @@ Authorization: Bearer {{auth_token}}
 Content-Type: application/json
 
 {
-  "action": "link:list",
-  "payload": {
+  "action": "link.list",
+  "data": {
     "search": "google",
     "is_deleted": false
   }

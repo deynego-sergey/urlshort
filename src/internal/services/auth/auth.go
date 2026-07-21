@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,9 +18,9 @@ import (
 )
 
 var (
-	ErrUserAlreadyExit = errors.New("user already exists")
-	ErrUserPending     = errors.New("user registration pending confirmation")
-	ErrTokenExpired    = errors.New("token expired")
+	ErrUserAlreadyExist = errors.New("user already exists")
+	ErrUserPending      = errors.New("user registration pending confirmation")
+	ErrInvalidSession   = errors.New("invalid or expired session")
 )
 
 type TokenPair struct {
@@ -31,7 +32,7 @@ type AuthService struct {
 	userRepo    user.IUserRepository
 	sessionRepo user.ISessionRepository
 	memStorage  *user.SessionMemoryStorage
-	notifier    notification.INotificationService // Наш центральный сервис уведомлений
+	notifier    notification.INotificationService
 	jwtSecret   string
 }
 
@@ -39,7 +40,7 @@ func NewAuthService(
 	ur user.IUserRepository,
 	sr user.ISessionRepository,
 	mem *user.SessionMemoryStorage,
-	notifier notification.INotificationService, // Внедрение через DI
+	notifier notification.INotificationService,
 	secret string,
 ) *AuthService {
 	return &AuthService{
@@ -54,14 +55,16 @@ func NewAuthService(
 func (s *AuthService) Register(ctx context.Context, username, password string) (string, error) {
 	_, err := s.userRepo.GetByUsername(ctx, username)
 	if err == nil {
-		return "", ErrUserAlreadyExit
+		return "", ErrUserAlreadyExist
 	}
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) {
+		log.Println(err)
 		return "", err
 	}
 
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
+		log.Println(err)
 		return "", fmt.Errorf("failed to hash password: %w", err)
 	}
 
@@ -69,17 +72,18 @@ func (s *AuthService) Register(ctx context.Context, username, password string) (
 	hash := sha256.Sum256([]byte(rawToken))
 	tokenHashStr := hex.EncodeToString(hash[:])
 
+	// Корректно принимаем (int64, error)
 	_, err = s.userRepo.CreateUser(ctx, username, string(passwordHash), tokenHashStr)
 	if err != nil {
+		log.Println(err)
 		return "", err
 	}
 
-	// Асинхронная отправка email, чтобы сеть SMTP не блокировала HTTP-ответ
 	s.notifier.SendAsync(ctx, notification.Notification{
 		TargetType: notification.TargetEmail,
 		Recipient:  username,
 		Subject:    "Подтверждение регистрации",
-		Body:       fmt.Sprintf("Ваш код подтверждения: %s\nИли ссылка: http://localhost:8080/confirm?token=%s", rawToken, rawToken),
+		Body:       fmt.Sprintf("Ваш код подтверждения: %s", rawToken),
 	})
 
 	return rawToken, nil
@@ -89,17 +93,20 @@ func (s *AuthService) ConfirmRegistration(ctx context.Context, rawToken string) 
 	hash := sha256.Sum256([]byte(rawToken))
 	tokenHashStr := hex.EncodeToString(hash[:])
 
-	u, err := s.userRepo.GetByConfirmationToken(ctx, tokenHashStr)
+	// 1. Сначала находим пользователя по хэшу подтверждения
+	u, err := s.userRepo.GetByConfirmationHash(ctx, tokenHashStr)
 	if err != nil {
 		return err
 	}
 
+	// 2. Активируем пользователя строго по его числовиму ID
 	return s.userRepo.ActivateUser(ctx, u.ID)
 }
 
 func (s *AuthService) Login(ctx context.Context, username, password string) (*TokenPair, error) {
 	u, err := s.userRepo.GetByUsername(ctx, username)
 	if err != nil {
+		log.Println(err)
 		return nil, err
 	}
 
@@ -118,24 +125,30 @@ func (s *AuthService) Refresh(ctx context.Context, rawRefreshToken string) (*Tok
 	hash := sha256.Sum256([]byte(rawRefreshToken))
 	tokenHashStr := hex.EncodeToString(hash[:])
 
-	session, err := s.memStorage.Get(tokenHashStr)
-	if err != nil {
-		session, err = s.sessionRepo.GetByRefreshToken(ctx, tokenHashStr)
+	var userID int64
+
+	// 1. Ищем сессию в in-memory кэше
+	id, exists := s.memStorage.Get(tokenHashStr)
+	if exists {
+		userID = id
+	} else {
+		// 2. Если в кэше нет, идем в базу через GetSessionByHash
+		session, err := s.sessionRepo.GetSessionByHash(ctx, tokenHashStr)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %v", ErrInvalidSession, err)
 		}
+		userID = session.UserID
 	}
 
-	if session.ExpiresAt.Before(time.Now()) {
-		_ = s.sessionRepo.Delete(ctx, session.ID)
-		s.memStorage.Delete(tokenHashStr)
-		return nil, errors.New("session expired")
+	// 3. Удаляем старую сессию
+	err := s.sessionRepo.DeleteSession(ctx, tokenHashStr)
+	if err != nil {
+		return nil, err
 	}
-
-	_ = s.sessionRepo.Delete(ctx, session.ID)
 	s.memStorage.Delete(tokenHashStr)
 
-	return s.generateTokens(ctx, session.UserID)
+	// 4. Генерируем новую пару токенов
+	return s.generateTokens(ctx, userID)
 }
 
 func (s *AuthService) RequestPasswordReset(ctx context.Context, username string) (string, error) {
@@ -148,17 +161,17 @@ func (s *AuthService) RequestPasswordReset(ctx context.Context, username string)
 	hash := sha256.Sum256([]byte(rawToken))
 	tokenHashStr := hex.EncodeToString(hash[:])
 
+	// Передаем u.ID, хэш и time.Duration
 	err = s.userRepo.SetPasswordResetToken(ctx, u.ID, tokenHashStr, 15*time.Minute)
 	if err != nil {
 		return "", err
 	}
 
-	// Асинхронная отправка токена сброса пароля
 	s.notifier.SendAsync(ctx, notification.Notification{
 		TargetType: notification.TargetEmail,
 		Recipient:  username,
 		Subject:    "Сброс пароля",
-		Body:       fmt.Sprintf("Для сброса пароля используйте код: %s", rawToken),
+		Body:       fmt.Sprintf("Код для сброса пароля: %s", rawToken),
 	})
 
 	return rawToken, nil
@@ -168,13 +181,10 @@ func (s *AuthService) ResetPassword(ctx context.Context, rawToken, newPassword s
 	hash := sha256.Sum256([]byte(rawToken))
 	tokenHashStr := hex.EncodeToString(hash[:])
 
-	u, err := s.userRepo.GetByResetToken(ctx, tokenHashStr)
+	// 1. Ищем пользователя по хэшу токена сброса
+	u, err := s.userRepo.GetByResetPasswordHash(ctx, tokenHashStr)
 	if err != nil {
 		return err
-	}
-
-	if u.ResetTokenExpiresAt.Before(time.Now()) {
-		return ErrTokenExpired
 	}
 
 	newHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
@@ -182,7 +192,8 @@ func (s *AuthService) ResetPassword(ctx context.Context, rawToken, newPassword s
 		return err
 	}
 
-	return s.userRepo.UpdatePasswordAndClearResetToken(ctx, u.ID, string(newHash))
+	// 2. Обновляем пароль строго по числовому ID пользователя
+	return s.userRepo.ResetPassword(ctx, u.ID, string(newHash))
 }
 
 func (s *AuthService) generateTokens(ctx context.Context, userID int64) (*TokenPair, error) {
@@ -192,10 +203,16 @@ func (s *AuthService) generateTokens(ctx context.Context, userID int64) (*TokenP
 	hash := sha256.Sum256([]byte(rawRefreshToken))
 	tokenHashStr := hex.EncodeToString(hash[:])
 
-	expiresAt := time.Now().Add(30 * 24 * time.Hour)
+	sessionDuration := 30 * 24 * time.Hour
 
-	_ = s.sessionRepo.CreateSession(ctx, userID, tokenHashStr, expiresAt)
-	s.memStorage.Set(tokenHashStr, &user.Session{UserID: userID, ExpiresAt: expiresAt})
+	// Создаем сессию в БД
+	err := s.sessionRepo.CreateSession(ctx, userID, tokenHashStr, sessionDuration)
+	if err != nil {
+		return nil, err
+	}
+
+	// Синхронизируем кэш в памяти тремя аргументами
+	s.memStorage.Set(tokenHashStr, userID, sessionDuration)
 
 	return &TokenPair{
 		AccessToken:  accessToken,

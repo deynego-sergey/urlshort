@@ -2,6 +2,7 @@ package notification
 
 import (
 	"context"
+	"log"
 )
 
 // TargetType определяет, куда отправляется уведомление
@@ -59,7 +60,10 @@ func (s *NotificationService) SendAsync(ctx context.Context, n Notification) {
 	}
 	go func() {
 		// Используем Background контекст, чтобы отмена HTTP-запроса не убила отправку сообщения
-		_ = sender.Send(context.Background(), n)
+		err := sender.Send(ctx, n)
+		if err != nil {
+			log.Println(err)
+		}
 	}()
 }
 
