@@ -140,7 +140,7 @@ func (h *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // === ОБРАБОТЧИКИ АВТОРИЗАЦИИ ===
-
+// handleRegister -
 func (h *InternalHandler) handleRegister(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	var payload RegisterPayload
 	if err := json.Unmarshal(data, &payload); err != nil || payload.Username == "" || payload.Password == "" {
@@ -165,6 +165,7 @@ func (h *InternalHandler) handleRegister(w http.ResponseWriter, r *http.Request,
 	_, _ = w.Write([]byte(`{"status":"success","message":"confirmation code sent","code":"` + code + `"}`))
 }
 
+// handleConfirm
 func (h *InternalHandler) handleConfirm(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	var payload ConfirmPayload
 	if err := json.Unmarshal(data, &payload); err != nil || payload.Token == "" {
@@ -184,6 +185,7 @@ func (h *InternalHandler) handleConfirm(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"success","message":"account activated"}`))
 }
+
 // handleLogin
 func (h *InternalHandler) handleLogin(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	var payload LoginPayload
@@ -206,10 +208,17 @@ func (h *InternalHandler) handleLogin(w http.ResponseWriter, r *http.Request, da
 
 	resp, _ := json.Marshal(tokens)
 	w.WriteHeader(http.StatusOK)
+	setRefreshTokenCookie(w, tokens.RefreshToken, 60*50*24*3)
+
 	_, _ = w.Write(resp)
 }
 
+// handleRefresh -
 func (h *InternalHandler) handleRefresh(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+	rft, err := extractRefreshToken(r)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+	}
 	var payload RefreshPayload
 	if err := json.Unmarshal(data, &payload); err != nil || payload.RefreshToken == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -217,7 +226,7 @@ func (h *InternalHandler) handleRefresh(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	tokens, err := h.authService.Refresh(r.Context(), payload.RefreshToken)
+	tokens, err := h.authService.Refresh(r.Context(), rft)
 	if err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"invalid or expired session"}`))
@@ -226,9 +235,11 @@ func (h *InternalHandler) handleRefresh(w http.ResponseWriter, r *http.Request, 
 
 	resp, _ := json.Marshal(tokens)
 	w.WriteHeader(http.StatusOK)
+	setRefreshTokenCookie(w, tokens.RefreshToken, 60*60*24*3)
 	_, _ = w.Write(resp)
 }
 
+// handleRequestReset -
 func (h *InternalHandler) handleRequestReset(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	var payload ResetRequestPayload
 	if err := json.Unmarshal(data, &payload); err != nil || payload.Username == "" {
@@ -248,6 +259,7 @@ func (h *InternalHandler) handleRequestReset(w http.ResponseWriter, r *http.Requ
 	_, _ = w.Write([]byte(`{"status":"success","message":"reset code sent","code":"` + code + `"}`))
 }
 
+// handleResetPassword
 func (h *InternalHandler) handleResetPassword(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	var payload ResetPasswordPayload
 	if err := json.Unmarshal(data, &payload); err != nil || payload.Token == "" || payload.NewPassword == "" {
@@ -269,7 +281,7 @@ func (h *InternalHandler) handleResetPassword(w http.ResponseWriter, r *http.Req
 }
 
 // === ОБРАБОТЧИКИ ССЫЛОК ===
-
+// handleCreateLink -
 func (h *InternalHandler) handleCreateLink(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	var payload CreateLinkPayload
 	if err := json.Unmarshal(data, &payload); err != nil || payload.OriginalURL == "" {
@@ -279,7 +291,7 @@ func (h *InternalHandler) handleCreateLink(w http.ResponseWriter, r *http.Reques
 	}
 
 	userID, _ := r.Context().Value("userID").(int64)
-
+	// todo: here create short code
 	shortLink, err := h.linkRepo.Create(r.Context(), payload.OriginalURL, userID)
 	if err != nil {
 		log.Printf("[ERROR] Failed to create link: %v", err)
@@ -298,6 +310,7 @@ func (h *InternalHandler) handleCreateLink(w http.ResponseWriter, r *http.Reques
 	_, _ = w.Write(resp)
 }
 
+// handleDeleteLink -
 func (h *InternalHandler) handleDeleteLink(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	var payload DeleteLinkPayload
 	if err := json.Unmarshal(data, &payload); err != nil || payload.ID == "" {
@@ -415,6 +428,7 @@ func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, dat
 	_, _ = w.Write(resp)
 }
 
+// handleUpdate
 func (h *InternalHandler) handleUpdate(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	userID, ok := r.Context().Value("userID").(int64)
 	if !ok || userID <= 0 {
@@ -432,4 +446,42 @@ func (h *InternalHandler) handleUpdate(w http.ResponseWriter, r *http.Request, d
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(resp)
 
+}
+
+func setRefreshTokenCookie(w http.ResponseWriter, refreshToken string, ttlSeconds int) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "l100xyz",
+		Value:    refreshToken,
+		Path:     "/v1/internal/", // Ограничиваем область отправки куки только ручкой обновления
+		MaxAge:   ttlSeconds,
+		HttpOnly: true,                    // Защита от XSS (JS на клиенте не сможет прочитать cookie)
+		Secure:   true,                    // Передача только по HTTPS
+		SameSite: http.SameSiteStrictMode, // Защита от CSRF
+	})
+}
+
+func extractRefreshToken(r *http.Request) (string, error) {
+	cookie, err := r.Cookie("l100xyz")
+	if err != nil {
+		if errors.Is(err, http.ErrNoCookie) {
+			return "", errors.New("refresh token cookie missing")
+		}
+		return "", err
+	}
+	if cookie.Value == "" {
+		return "", errors.New("refresh token is empty")
+	}
+	return cookie.Value, nil
+}
+
+func clearRefreshTokenCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "l100xyz",
+		Value:    "",
+		Path:     "/v1/internal/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+	})
 }

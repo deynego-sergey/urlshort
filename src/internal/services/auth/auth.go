@@ -10,6 +10,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 
@@ -103,6 +104,7 @@ func (s *AuthService) ConfirmRegistration(ctx context.Context, rawToken string) 
 	return s.userRepo.ActivateUser(ctx, u.ID)
 }
 
+// Login -
 func (s *AuthService) Login(ctx context.Context, username, password string) (*TokenPair, error) {
 	u, err := s.userRepo.GetByUsername(ctx, username)
 	if err != nil {
@@ -121,6 +123,7 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (*To
 	return s.generateTokens(ctx, u.ID)
 }
 
+// Refresh -
 func (s *AuthService) Refresh(ctx context.Context, rawRefreshToken string) (*TokenPair, error) {
 	hash := sha256.Sum256([]byte(rawRefreshToken))
 	tokenHashStr := hex.EncodeToString(hash[:])
@@ -196,22 +199,40 @@ func (s *AuthService) ResetPassword(ctx context.Context, rawToken, newPassword s
 	return s.userRepo.ResetPassword(ctx, u.ID, string(newHash))
 }
 
+// generateTokens -
 func (s *AuthService) generateTokens(ctx context.Context, userID int64) (*TokenPair, error) {
-	accessToken := "mock_access_token"
-	rawRefreshToken := "mock_refresh_token"
+	// 1. Генерация настоящих JWT Access Token
+	claims := jwt.MapClaims{
+		"user_id": userID,
+		"exp":     time.Now().Add(15 * time.Minute).Unix(),
+		"iat":     time.Now().Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	accessToken, err := token.SignedString([]byte(s.jwtSecret))
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign access token: %w", err)
+	}
 
+	// 2. Генерация криптографически стойкого случайного Refresh Token
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
+	}
+	rawRefreshToken := hex.EncodeToString(randomBytes)
+
+	// Хэширование Refresh токена для сохранения в БД
 	hash := sha256.Sum256([]byte(rawRefreshToken))
 	tokenHashStr := hex.EncodeToString(hash[:])
 
 	sessionDuration := 30 * 24 * time.Hour
 
 	// Создаем сессию в БД
-	err := s.sessionRepo.CreateSession(ctx, userID, tokenHashStr, sessionDuration)
+	err = s.sessionRepo.CreateSession(ctx, userID, tokenHashStr, sessionDuration)
 	if err != nil {
 		return nil, err
 	}
 
-	// Синхронизируем кэш в памяти тремя аргументами
+	// Синхронизируем кэш в памяти
 	s.memStorage.Set(tokenHashStr, userID, sessionDuration)
 
 	return &TokenPair{
