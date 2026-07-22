@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"urlshort/pkg/utils"
 
 	"urlshort/internal/repository/link"
 	"urlshort/internal/services/auth"
@@ -72,12 +73,14 @@ type ListLinksPayload struct {
 type InternalHandler struct {
 	authService *auth.AuthService
 	linkRepo    link.ILinkRepository
+	converter   utils.Converter
 }
 
-func NewInternalHandler(as *auth.AuthService, lr link.ILinkRepository) *InternalHandler {
+func NewInternalHandler(as *auth.AuthService, lr link.ILinkRepository, cnv utils.Converter) *InternalHandler {
 	return &InternalHandler{
 		authService: as,
 		linkRepo:    lr,
+		converter:   cnv,
 	}
 }
 

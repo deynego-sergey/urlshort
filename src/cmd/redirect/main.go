@@ -7,6 +7,7 @@ import (
 	"time"
 	"urlshort/internal/repository/cache"
 	"urlshort/internal/repository/link"
+	"urlshort/pkg/database/pg"
 	"urlshort/pkg/utils"
 	//"yourproject/repository"
 	//"yourproject/services"
@@ -19,10 +20,12 @@ func main() {
 	ctx, cf := context.WithCancel(context.Background())
 	// 1. Инициализация БД (Supabase) и репозитория
 	// db := initPostgres()
-	repo, err := link.NewLinkRepository(ctx)
+	pool, err := pg.InitSupabasePool(ctx)
+
 	if err != nil {
 		log.Fatal(err)
 	}
+	repo := link.NewLinkRepository(pool)
 	if err = repo.CreateTable(ctx); err != nil {
 		log.Fatal(err)
 	}

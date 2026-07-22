@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"urlshort/pkg/utils"
 
 	"urlshort/cmd/api/handlers"
 	"urlshort/internal/repository/link"
@@ -17,6 +18,8 @@ import (
 	"urlshort/internal/services/notification"
 	"urlshort/pkg/database/pg"
 )
+
+const alphabet = "aBcDeFgHiJkLmNoPqRsTuVwXyZ8642097531AbCdRfGhIjKlMnOpQrStUvWxYz"
 
 func main() {
 	log.Println("Starting API server...")
@@ -57,9 +60,9 @@ func main() {
 		log.Fatal("JWT_SECRET environment variable is required")
 	}
 	authService := auth.NewAuthService(userRepo, sessionRepo, sessionMemory, notificationService, jwtSecret)
-
+	converterService := utils.NewConverter(alphabet)
 	// 6. Маршрутизация через единый InternalHandler
-	internalHandler := handlers.NewInternalHandler(authService, linkRepo)
+	internalHandler := handlers.NewInternalHandler(authService, linkRepo, converterService)
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/internal", internalHandler)
