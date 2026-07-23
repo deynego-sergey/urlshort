@@ -20,7 +20,7 @@ import (
 	"urlshort/pkg/database/pg"
 )
 
-const alphabet = "aBcDeFgHiJkLmNoPqRsTuVwXyZ8642097531AbCdRfGhIjKlMnOpQrStUvWxYz"
+//const alphabet = "aBcDeFgHiJkLmNoPqRsTuVwXyZ8642097531AbCdRfGhIjKlMnOpQrStUvWxYz"
 
 func main() {
 	log.Println("Starting API server...")
@@ -66,7 +66,7 @@ func main() {
 
 	authMiddleware := middleware.AuthMiddleware(jwtSecret)
 	mux := http.NewServeMux()
-	mux.Handle("/v1/internal", authMiddleware(internalHandler))
+	mux.Handle("/v1", authMiddleware(internalHandler))
 
 	server := &http.Server{
 		Addr:         ":8080",

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	middleware "urlshort/pkg/middleware/jwtauth"
 	"urlshort/pkg/utils"
 
 	"urlshort/internal/repository/link"
@@ -287,27 +288,31 @@ func (h *InternalHandler) handleResetPassword(w http.ResponseWriter, r *http.Req
 // handleCreateLink -
 func (h *InternalHandler) handleCreateLink(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	var payload CreateLinkPayload
+	actx, ok := getAuthContext(r)
+	if !ok || !actx.IsValid {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	if err := json.Unmarshal(data, &payload); err != nil || payload.OriginalURL == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
 		return
 	}
 
-	userID, _ := r.Context().Value("userID").(int64)
 	// todo: here create short code
-	shortLink, err := h.linkRepo.Create(r.Context(), payload.OriginalURL, userID)
+	shortLink, err := h.linkRepo.Create(r.Context(), payload.OriginalURL, actx.UserID)
 	if err != nil {
 		log.Printf("[ERROR] Failed to create link: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"failed to create short link"}`))
 		return
 	}
-	
+
 	resp, err := json.Marshal(link.ShortLinkGen{
 		ID:          shortLink.ID,
 		ShortLink:   h.converter.ConvertToStr(shortLink.ID),
 		OriginalURL: shortLink.OriginalURL,
-		UserID:      userID,
+		UserID:      actx.UserID,
 		IsDeleted:   shortLink.IsDeleted,
 		CreatedAt:   shortLink.CreatedAt,
 		UpdatedAt:   shortLink.UpdatedAt,
@@ -324,6 +329,11 @@ func (h *InternalHandler) handleCreateLink(w http.ResponseWriter, r *http.Reques
 // handleDeleteLink -
 func (h *InternalHandler) handleDeleteLink(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	var payload DeleteLinkPayload
+	actx, ok := getAuthContext(r)
+	if !ok || !actx.IsValid {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
 	if err := json.Unmarshal(data, &payload); err != nil || payload.ID == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
@@ -337,9 +347,9 @@ func (h *InternalHandler) handleDeleteLink(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	userID, _ := r.Context().Value("userID").(int64)
+	//userID, _ := r.Context().Value("userID").(int64)
 
-	err = h.linkRepo.SoftDelete(r.Context(), linkID, userID)
+	err = h.linkRepo.SoftDelete(r.Context(), linkID, actx.UserID)
 	if err != nil {
 		log.Printf("[ERROR] Failed to delete link: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -353,8 +363,13 @@ func (h *InternalHandler) handleDeleteLink(w http.ResponseWriter, r *http.Reques
 
 // handleCreateBatch -
 func (h *InternalHandler) handleCreateBatch(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
-	userID, ok := r.Context().Value("userID").(int64)
-	if !ok || userID <= 0 {
+	actx, ok := getAuthContext(r)
+	if !ok || !actx.IsValid {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	if actx.UserID <= 0 {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid session or missing token"}`))
 		return
@@ -370,7 +385,7 @@ func (h *InternalHandler) handleCreateBatch(w http.ResponseWriter, r *http.Reque
 	linksInput := make([]*link.ShortLink, len(dto.Items))
 	for i, item := range dto.Items {
 		linksInput[i] = &link.ShortLink{
-			UserID:      userID,
+			UserID:      actx.UserID,
 			OriginalURL: strings.TrimSpace(item.OriginalURL),
 		}
 	}
@@ -395,8 +410,14 @@ func (h *InternalHandler) handleCreateBatch(w http.ResponseWriter, r *http.Reque
 
 // handleList -
 func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
-	userID, ok := r.Context().Value("userID").(int64)
-	if !ok || userID <= 0 {
+
+	actx, ok := getAuthContext(r)
+	if !ok || !actx.IsValid {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	//userID, ok := r.Context().Value("userID").(int64)
+	if actx.UserID <= 0 {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid session"}`))
 		return
@@ -416,7 +437,7 @@ func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, dat
 	}
 
 	filter := link.LinkFilter{
-		UserID:    userID,
+		UserID:    actx.UserID,
 		Search:    searchPtr,
 		IsDeleted: dto.IsDeleted,
 	}
@@ -429,7 +450,19 @@ func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, dat
 		return
 	}
 
-	resp, err := json.Marshal(map[string]any{"links": links})
+	sl := make([]*link.ShortLinkGen, len(links))
+	for _, lnk := range links {
+		sl = append(sl, &link.ShortLinkGen{
+			ID:          lnk.ID,
+			ShortLink:   h.converter.ConvertToStr(lnk.ID),
+			OriginalURL: lnk.OriginalURL,
+			UserID:      lnk.UserID,
+			IsDeleted:   lnk.IsDeleted,
+			CreatedAt:   lnk.CreatedAt,
+			UpdatedAt:   lnk.UpdatedAt,
+		})
+	}
+	resp, err := json.Marshal(map[string]any{"links": sl})
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -441,8 +474,13 @@ func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, dat
 
 // handleUpdate
 func (h *InternalHandler) handleUpdate(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
-	userID, ok := r.Context().Value("userID").(int64)
-	if !ok || userID <= 0 {
+	actx, ok := getAuthContext(r)
+	if !ok || !actx.IsValid {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	if actx.UserID <= 0 {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid session"}`))
 		return
@@ -495,4 +533,13 @@ func clearRefreshTokenCookie(w http.ResponseWriter) {
 		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 	})
+}
+
+// Вспомогательный метод для извлечения AuthContext из r.Context()
+func getAuthContext(r *http.Request) (middleware.AuthContext, bool) {
+	authCtx, ok := r.Context().Value(middleware.AuthContextKey).(middleware.AuthContext)
+	if !ok || !authCtx.IsValid || authCtx.UserID <= 0 {
+		return middleware.AuthContext{}, false
+	}
+	return authCtx, true
 }

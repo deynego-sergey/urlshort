@@ -38,11 +38,25 @@ type ShortLinkGen struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-type LinkFilter struct {
-	UserID    int64   `json:"user_id"`
-	Search    *string `json:"search"`
-	IsDeleted *bool   `json:"is_deleted"`
+type Pagination struct {
+	Limit      int `json:"limit,omitempty"`
+	Offset     int `json:"offset,omitempty"`
+	Count      int `json:"count,omitempty"`
+	TotalCount int `json:"total_count,omitempty"`
 }
+
+type LinkFilter struct {
+	UserID     int64       `json:"user_id"`
+	Search     *string     `json:"search,omitempty"`
+	IsDeleted  *bool       `json:"is_deleted,omitempty"`
+	Pagination *Pagination `json:"pagination,omitempty"`
+}
+
+//type LinkFilter struct {
+//	UserID    int64   `json:"user_id"`
+//	Search    *string `json:"search"`
+//	IsDeleted *bool   `json:"is_deleted"`
+//}
 
 type ILinkRepository interface {
 	IInitDatabaseRepository

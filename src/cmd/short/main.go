@@ -60,7 +60,7 @@ func main() {
 	authService := auth.NewAuthService(userRepo, sessionRepo, sessionMemory, notificationService, jwtSecret)
 
 	// 6. Маршрутизация через единый InternalHandler
-	internalHandler := handlers.NewInternalHandler(authService, linkRepo, utils.NewConverter(alphabet))
+	internalHandler := handlers.NewInternalHandler(authService, linkRepo, utils.NewConverter(utils.GetAlphabetString()))
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/internal", internalHandler)
