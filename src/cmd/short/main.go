@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"urlshort/pkg/utils"
 
 	"urlshort/cmd/api/handlers"
 	"urlshort/internal/repository/link"
@@ -59,7 +60,7 @@ func main() {
 	authService := auth.NewAuthService(userRepo, sessionRepo, sessionMemory, notificationService, jwtSecret)
 
 	// 6. Маршрутизация через единый InternalHandler
-	internalHandler := handlers.NewInternalHandler(authService, linkRepo)
+	internalHandler := handlers.NewInternalHandler(authService, linkRepo, utils.NewConverter(alphabet))
 
 	mux := http.NewServeMux()
 	mux.Handle("/v1/internal", internalHandler)

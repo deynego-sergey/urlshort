@@ -13,7 +13,7 @@ import (
 	//"yourproject/services"
 )
 
-const alphabet = "aBcDeFgHiJkLmNoPqRsTuVwXyZ8642097531AbCdRfGhIjKlMnOpQrStUvWxYz"
+//const alphabet = "aBcDeFgHiJkLmNoPqRsTuVwXyZ8642097531AbCdRfGhIjKlMnOpQrStUvWxYz"
 
 func main() {
 
@@ -33,7 +33,7 @@ func main() {
 	// 2. Инициализация легковесного кэша (кэш живет в RAM вашего сервера)
 	resolver := cache.NewCache()
 
-	converter := utils.NewConverter(alphabet)
+	converter := utils.NewConverter(utils.GetAlphabetString())
 
 	// 3. Создаем стандартный роутер Go 1.22+
 	mux := http.NewServeMux()

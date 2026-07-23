@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	middleware "urlshort/pkg/middleware/jwtauth"
 	"urlshort/pkg/utils"
 
 	"urlshort/cmd/api/handlers"
@@ -60,12 +61,12 @@ func main() {
 		log.Fatal("JWT_SECRET environment variable is required")
 	}
 	authService := auth.NewAuthService(userRepo, sessionRepo, sessionMemory, notificationService, jwtSecret)
-	converterService := utils.NewConverter(alphabet)
 	// 6. Маршрутизация через единый InternalHandler
-	internalHandler := handlers.NewInternalHandler(authService, linkRepo, converterService)
+	internalHandler := handlers.NewInternalHandler(authService, linkRepo, utils.NewConverter(utils.GetAlphabetString()))
 
+	authMiddleware := middleware.AuthMiddleware(jwtSecret)
 	mux := http.NewServeMux()
-	mux.Handle("/v1/internal", internalHandler)
+	mux.Handle("/v1/internal", authMiddleware(internalHandler))
 
 	server := &http.Server{
 		Addr:         ":8080",

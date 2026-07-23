@@ -28,6 +28,16 @@ type ShortLink struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type ShortLinkGen struct {
+	ID          int64     `json:"id"`
+	ShortLink   string    `json:"short_link"`
+	OriginalURL string    `json:"original_url"`
+	UserID      int64     `json:"user_id,omitempty"`
+	IsDeleted   bool      `json:"is_deleted"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 type LinkFilter struct {
 	UserID    int64   `json:"user_id"`
 	Search    *string `json:"search"`

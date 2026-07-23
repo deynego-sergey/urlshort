@@ -76,11 +76,11 @@ type InternalHandler struct {
 	converter   utils.Converter
 }
 
-func NewInternalHandler(as *auth.AuthService, lr link.ILinkRepository, cnv utils.Converter) *InternalHandler {
+func NewInternalHandler(as *auth.AuthService, lr link.ILinkRepository, cnv *utils.Converter) *InternalHandler {
 	return &InternalHandler{
 		authService: as,
 		linkRepo:    lr,
-		converter:   cnv,
+		converter:   *cnv,
 	}
 }
 
@@ -302,8 +302,16 @@ func (h *InternalHandler) handleCreateLink(w http.ResponseWriter, r *http.Reques
 		_, _ = w.Write([]byte(`{"error":"failed to create short link"}`))
 		return
 	}
-
-	resp, err := json.Marshal(shortLink)
+	
+	resp, err := json.Marshal(link.ShortLinkGen{
+		ID:          shortLink.ID,
+		ShortLink:   h.converter.ConvertToStr(shortLink.ID),
+		OriginalURL: shortLink.OriginalURL,
+		UserID:      userID,
+		IsDeleted:   shortLink.IsDeleted,
+		CreatedAt:   shortLink.CreatedAt,
+		UpdatedAt:   shortLink.UpdatedAt,
+	})
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
