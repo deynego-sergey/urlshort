@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"urlshort/pkg/middleware/cors"
 	middleware "urlshort/pkg/middleware/jwtauth"
 	"urlshort/pkg/utils"
 
@@ -65,8 +66,9 @@ func main() {
 	internalHandler := handlers.NewInternalHandler(authService, linkRepo, utils.NewConverter(utils.GetAlphabetString()))
 
 	authMiddleware := middleware.AuthMiddleware(jwtSecret)
+	corsMiddlewarw := cors.CorsMiddleware
 	mux := http.NewServeMux()
-	mux.Handle("/v1", authMiddleware(internalHandler))
+	mux.Handle("/v1", corsMiddlewarw(authMiddleware(internalHandler)))
 
 	server := &http.Server{
 		Addr:         ":8080",

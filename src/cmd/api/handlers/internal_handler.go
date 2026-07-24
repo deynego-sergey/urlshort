@@ -88,14 +88,14 @@ func NewInternalHandler(as *auth.AuthService, lr link.ILinkRepository, cnv *util
 // ServeHTTP реализует обработку HTTP-запросов, дублируя логику маршрутизации WebSocket
 func (h *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	//w.Header().Set("Access-Control-Allow-Origin", "*")
+	//w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	//w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
+	//	if r.Method == http.MethodOptions {
+	//		w.WriteHeader(http.StatusOK)
+	//		return
+	//	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -136,6 +136,12 @@ func (h *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleList(w, r, router.Data)
 	case "link.link":
 		h.handleUpdate(w, r, router.Data)
+	case "stat.short":
+		h.handleLinkStat(w, r, router.Data)
+	case "stat.full":
+		h.handleFullLinkStat(w, r, router.Data)
+	case "stat.user":
+		h.handleUserState(w, r, router.Data)
 
 	default:
 		w.WriteHeader(http.StatusBadRequest)
@@ -212,34 +218,46 @@ func (h *InternalHandler) handleLogin(w http.ResponseWriter, r *http.Request, da
 
 	resp, _ := json.Marshal(tokens)
 	w.WriteHeader(http.StatusOK)
-	setRefreshTokenCookie(w, tokens.RefreshToken, 60*50*24*3)
+	setRefreshTokenCookie(w, tokens.RefreshToken, 60*60*24*3)
 
 	_, _ = w.Write(resp)
 }
 
 // handleRefresh -
 func (h *InternalHandler) handleRefresh(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
+
 	rft, err := extractRefreshToken(r)
 	if err != nil {
 		w.WriteHeader(http.StatusUnauthorized)
-	}
-	var payload RefreshPayload
-	if err := json.Unmarshal(data, &payload); err != nil || payload.RefreshToken == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
+		_, _ = w.Write([]byte(`{"error":"failed to get refresh token"}`))
 		return
 	}
 
+	actx, ok := getAuthContext(r)
+	if !ok || !actx.IsValid || actx.UserID <= 0 {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid session"}`))
+		return // ОБЯЗАТЕЛЬНО
+	}
+
+	// Пример логики обновления токенов/данных
 	tokens, err := h.authService.Refresh(r.Context(), rft)
 	if err != nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"invalid or expired session"}`))
-		return
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to refresh token"}`))
+		return // ОБЯЗАТЕЛЬНО
 	}
 
-	resp, _ := json.Marshal(tokens)
+	resp, err := json.Marshal(tokens)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to marshal response"}`))
+		return // ОБЯЗАТЕЛЬНО
+	}
+
+	// Успешный ответ: WriteHeader вызывается ровно 1 раз в самом конце
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	setRefreshTokenCookie(w, tokens.RefreshToken, 60*60*24*3)
 	_, _ = w.Write(resp)
 }
 
@@ -293,6 +311,7 @@ func (h *InternalHandler) handleCreateLink(w http.ResponseWriter, r *http.Reques
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	// todo: check source link(original)
 	if err := json.Unmarshal(data, &payload); err != nil || payload.OriginalURL == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"invalid payload"}`))
@@ -472,40 +491,60 @@ func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, dat
 	_, _ = w.Write(resp)
 }
 
+type UpdateLinkRequest struct {
+	ID          int64  `json:"id"`
+	OriginalURL string `json:"original_url"`
+}
+
 // handleUpdate
 func (h *InternalHandler) handleUpdate(w http.ResponseWriter, r *http.Request, data json.RawMessage) {
 	actx, ok := getAuthContext(r)
-	if !ok || !actx.IsValid {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-
-	if actx.UserID <= 0 {
+	if !ok || !actx.IsValid || actx.UserID <= 0 {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid session"}`))
 		return
 	}
-	links := []*link.ShortLink{}
-	resp, err := json.Marshal(map[string]any{"links": links})
+
+	var req UpdateLinkRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid request payload"}`))
+		return
+	}
+
+	if req.ID <= 0 || req.OriginalURL == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"id and original_url are required"}`))
+		return
+	}
+
+	err := h.linkRepo.UpdateURL(r.Context(), req.ID, actx.UserID, req.OriginalURL)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to update link"}`))
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(resp)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 
 }
 
 func setRefreshTokenCookie(w http.ResponseWriter, refreshToken string, ttlSeconds int) {
+	isProd := false
+	sameSite := http.SameSiteLaxMode
+	if isProd {
+		sameSite = http.SameSiteStrictMode
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "l100xyz",
 		Value:    refreshToken,
-		Path:     "/v1/internal/", // Ограничиваем область отправки куки только ручкой обновления
+		Path:     "/v1", // Ограничиваем область отправки куки только ручкой обновления
 		MaxAge:   ttlSeconds,
-		HttpOnly: true,                    // Защита от XSS (JS на клиенте не сможет прочитать cookie)
-		Secure:   true,                    // Передача только по HTTPS
-		SameSite: http.SameSiteStrictMode, // Защита от CSRF
+		HttpOnly: true,     // Защита от XSS (JS на клиенте не сможет прочитать cookie)
+		Secure:   isProd,   // Передача только по HTTPS
+		SameSite: sameSite, // Защита от CSRF
 	})
 }
 
@@ -527,7 +566,7 @@ func clearRefreshTokenCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "l100xyz",
 		Value:    "",
-		Path:     "/v1/internal/",
+		Path:     "/v1",
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   true,
