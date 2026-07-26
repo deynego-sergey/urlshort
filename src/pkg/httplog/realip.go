@@ -6,25 +6,25 @@ import (
 	"strings"
 )
 
-// ExtractRealIP извлекает фактический IP-адрес клиента с учетом заголовков прокси
 func ExtractRealIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		ips := strings.Split(xff, ",")
-		if len(ips) > 0 {
-			clientIP := strings.TrimSpace(ips[0])
-			if clientIP != "" {
-				return clientIP
+		parts := strings.Split(xff, ",")
+		if len(parts) > 0 {
+			ip := strings.TrimSpace(parts[0])
+			if ip != "" {
+				return ip
 			}
 		}
 	}
 
-	if xreal := r.Header.Get("X-Real-IP"); xreal != "" {
-		return strings.TrimSpace(xreal)
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
 	}
 
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	if err == nil {
+		return host
 	}
-	return host
+
+	return r.RemoteAddr
 }
