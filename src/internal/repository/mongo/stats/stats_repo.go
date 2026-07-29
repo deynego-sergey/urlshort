@@ -3,6 +3,7 @@ package stats
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"urlshort/pkg/database/mongoatlas"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -66,10 +67,56 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 	for _, update := range updates {
 		filter := bson.M{"source_url": update.SourceURL}
 
+		// Расчет индексов массивов времени
+		idx15min := (update.Timestamp.Hour()*60 + update.Timestamp.Minute()) / 15
+		idxDayOfWeek := (int(update.Timestamp.Weekday()) + 6) % 7 // 0 = Пн, ..., 6 = Вс
+
+		incDoc := bson.M{
+			"total_clicks": 1,
+			"clicks_by_15min." + strconv.Itoa(idx15min):           1,
+			"clicks_by_day_of_week." + strconv.Itoa(idxDayOfWeek): 1,
+		}
+
+		if update.IsBot {
+			incDoc["bot_clicks"] = 1
+			if update.Device != "" {
+				incDoc["devices."+update.Device] = 1
+			}
+			if update.Browser != "" {
+				incDoc["browsers."+update.Browser] = 1
+			}
+		} else if update.IsUnknown {
+			incDoc["unknown_clicks"] = 1
+			if update.Device != "" {
+				incDoc["devices."+update.Device] = 1
+			}
+			if update.Browser != "" {
+				incDoc["browsers."+update.Browser] = 1
+			}
+		} else {
+			if update.Device != "" {
+				incDoc["devices."+update.Device] = 1
+			}
+			if update.Browser != "" {
+				incDoc["browsers."+update.Browser] = 1
+			}
+			if update.IsUnique {
+				incDoc["unique_clicks"] = 1
+			}
+		}
+
+		if update.Referrer != "" {
+			incDoc["referrers."+update.Referrer] = 1
+		}
+		if update.Country != "" {
+			incDoc["countries."+update.Country] = 1
+		}
+		if update.Provider != "" {
+			incDoc["providers."+update.Provider] = 1
+		}
+
 		updateDoc := bson.M{
-			"$inc": bson.M{
-				"clicks_count": 1,
-			},
+			"$inc": incDoc,
 			"$set": bson.M{
 				"last_clicked_at": update.Timestamp,
 				"target_url":      update.TargetURL,
@@ -77,6 +124,12 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 			"$setOnInsert": bson.M{
 				"created_at": update.Timestamp,
 			},
+		}
+
+		if update.IsUnique && update.VisitorHash != "" {
+			updateDoc["$addToSet"] = bson.M{
+				"visitor_hashes": update.VisitorHash,
+			}
 		}
 
 		model := mongo.NewUpdateOneModel().

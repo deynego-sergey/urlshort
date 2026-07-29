@@ -126,20 +126,28 @@ func (h *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleResetPassword(w, r, router.Data)
 
 	// Маршруты управления ссылками
+	// create short link
 	case "link.create":
 		h.handleCreateLink(w, r, router.Data)
+	// deactivate link
 	case "link.delete":
 		h.handleDeleteLink(w, r, router.Data)
+	//batch links
 	case "link.create_batch":
 		h.handleCreateBatch(w, r, router.Data)
+	// list links
 	case "link.list":
 		h.handleList(w, r, router.Data)
+	//update link
 	case "link.link":
 		h.handleUpdate(w, r, router.Data)
+	// statistic by short link
 	case "stat.short":
 		h.handleLinkStat(w, r, router.Data)
+	// statistic for link - full info
 	case "stat.full":
 		h.handleFullLinkStat(w, r, router.Data)
+	// statistic for user by links
 	case "stat.user":
 		h.handleUserState(w, r, router.Data)
 
