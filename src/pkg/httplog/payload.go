@@ -1,10 +1,8 @@
 package httplog
 
 import (
-	"context"
 	"encoding/gob"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 )
@@ -77,29 +75,17 @@ func NewRequestPayload(r *http.Request, targetURL string) *RequestPayload {
 	return payload
 }
 
-func WritePayloadContext(ctx context.Context, w io.Writer, p *RequestPayload) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		enc := gob.NewEncoder(w)
-		if err := enc.Encode(p); err != nil {
-			return fmt.Errorf("encode payload failed: %w", err)
-		}
-		return nil
+func WritePayload(enc *gob.Encoder, p *RequestPayload) error {
+	if err := enc.Encode(p); err != nil {
+		return fmt.Errorf("encode payload failed: %w", err)
 	}
+	return nil
 }
 
-func ReadPayloadContext(ctx context.Context, r io.Reader) (*RequestPayload, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	default:
-		var p RequestPayload
-		dec := gob.NewDecoder(r)
-		if err := dec.Decode(&p); err != nil {
-			return nil, err
-		}
-		return &p, nil
+func ReadPayload(dec *gob.Decoder) (*RequestPayload, error) {
+	var p RequestPayload
+	if err := dec.Decode(&p); err != nil {
+		return nil, err
 	}
+	return &p, nil
 }

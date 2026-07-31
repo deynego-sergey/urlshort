@@ -2,6 +2,7 @@ package httplog
 
 import (
 	"context"
+	"encoding/gob"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ type FileRotator struct {
 	dir          string
 	maxSizeBytes int64
 	currentFile  *os.File
+	currentEnc   *gob.Encoder
 	currentSize  int64
 	activePath   string
 }
@@ -25,8 +27,6 @@ func NewFileRotator(dir string, maxSizeBytes int64) (*FileRotator, error) {
 
 	activePath := filepath.Join(dir, "active.log")
 
-	// Если при старте обнаружен старый active.log с данными от предыдущей сессии,
-	// превращаем его в .ready для вычитки фоновым воркером отправителя.
 	if info, err := os.Stat(activePath); err == nil && info.Size() > 0 {
 		readyPath := filepath.Join(dir, fmt.Sprintf("chunk_%d.ready", time.Now().UnixNano()))
 		_ = os.Rename(activePath, readyPath)
@@ -58,6 +58,7 @@ func (r *FileRotator) openActiveFile() error {
 	}
 
 	r.currentFile = f
+	r.currentEnc = gob.NewEncoder(f)
 	r.currentSize = info.Size()
 	return nil
 }
@@ -66,14 +67,19 @@ func (r *FileRotator) Write(ctx context.Context, p *RequestPayload) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	if r.currentSize >= r.maxSizeBytes {
 		if err := r.rotateLocked(); err != nil {
 			return err
 		}
 	}
 
-	startSize := r.currentSize
-	err := WritePayloadContext(ctx, r.currentFile, p)
+	err := WritePayload(r.currentEnc, p)
 	if err != nil {
 		return err
 	}
@@ -81,17 +87,15 @@ func (r *FileRotator) Write(ctx context.Context, p *RequestPayload) error {
 	info, err := r.currentFile.Stat()
 	if err == nil {
 		r.currentSize = info.Size()
-	} else {
-		r.currentSize = startSize
 	}
 
 	return nil
 }
 
-// rotateLocked -
 func (r *FileRotator) rotateLocked() error {
 	if r.currentFile != nil {
 		_ = r.currentFile.Close()
+		r.currentEnc = nil
 	}
 
 	readyPath := filepath.Join(r.dir, fmt.Sprintf("chunk_%d.ready", time.Now().UnixNano()))
@@ -102,7 +106,6 @@ func (r *FileRotator) rotateLocked() error {
 	return r.openActiveFile()
 }
 
-// ForceRotate -
 func (r *FileRotator) ForceRotate() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -118,7 +121,10 @@ func (r *FileRotator) Close() error {
 	defer r.mu.Unlock()
 
 	if r.currentFile != nil {
-		return r.currentFile.Close()
+		err := r.currentFile.Close()
+		r.currentFile = nil
+		r.currentEnc = nil
+		return err
 	}
 	return nil
 }

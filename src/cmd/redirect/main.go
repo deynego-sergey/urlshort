@@ -5,73 +5,125 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
 	"time"
+
 	"urlshort/internal/repository/cache"
 	"urlshort/internal/repository/link"
 	"urlshort/pkg/database/pg"
 	"urlshort/pkg/httplog"
 	"urlshort/pkg/utils"
-	//"yourproject/repository"
-	//"yourproject/services"
 )
 
-//const alphabet = "aBcDeFgHiJkLmNoPqRsTuVwXyZ8642097531AbCdRfGhIjKlMnOpQrStUvWxYz"
+func getEnvOrDefault(key, defaultValue string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultValue
+}
+
+func getEnvInt64OrDefault(key string, defaultValue int64) int64 {
+	valStr := os.Getenv(key)
+	if valStr == "" {
+		return defaultValue
+	}
+	val, err := strconv.ParseInt(valStr, 10, 64)
+	if err != nil {
+		return defaultValue
+	}
+	return val
+}
 
 func main() {
+	// 1. Инициализация контекста для Graceful Shutdown
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
-	ctx, cf := context.WithCancel(context.Background())
-	// 1. Инициализация БД (Supabase) и репозитория
-	// db := initPostgres()
+	// 2. Инициализация БД (Supabase / PostgreSQL) и репозитория
 	pool, err := pg.InitSupabasePool(ctx)
-
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer pool.Close()
+
 	repo := link.NewLinkRepository(pool)
 	if err = repo.CreateTable(ctx); err != nil {
 		log.Fatal(err)
 	}
 
-	// 2. Инициализация легковесного кэша (кэш живет в RAM вашего сервера)
+	// 3. Инициализация кэша в RAM и конвертера кодов
 	resolver := cache.NewCache()
 	converter := utils.NewConverter(utils.GetAlphabetString())
 
-	unix_sock := os.Getenv("UNIX_SOCKET")
-	log_dir := os.Getenv("LOG_DIR")
-	ssender := httplog.NewSocketSender(unix_sock, log_dir)
-	//
+	// 4. Инициализация параметров и структуры логирования (FileRotator + SocketSender)
+	unixSock := getEnvOrDefault("UNIX_SOCKET", "/tmp/stats.sock")
+	logDir := getEnvOrDefault("LOG_DIR", "./logs/httplog")
+	maxLogSizeBytes := getEnvInt64OrDefault("LOG_MAX_SIZE_BYTES", 10*1024*1024) // 10 MB по умолчанию
 
-	// 3. Создаем стандартный роутер Go 1.22+
+	rotator, err := httplog.NewFileRotator(logDir, maxLogSizeBytes)
+	if err != nil {
+		log.Fatalf("failed to initialize file rotator: %v", err)
+	}
+	defer func() {
+		_ = rotator.ForceRotate()
+		_ = rotator.Close()
+	}()
+
+	// Запускаем воркер отправки накопившихся логов через сокет один раз при старте
+	ssender := httplog.NewSocketSender(unixSock, logDir)
+	go ssender.Start(ctx)
+
+	// 5. Создаем HTTP-роутер
 	mux := http.NewServeMux()
 
-	// Главный и единственный эндпоинт для редиректа
 	mux.HandleFunc("GET /{sh}", func(w http.ResponseWriter, r *http.Request) {
 		code := r.PathValue("sh")
 		if code == "" {
-			ssender.Start(r.Context())
 			http.Error(w, "Bad Request", http.StatusBadRequest)
 			return
 		}
 
+		// Раннее извлечение данных: сразу снимаем метрику HTTP-запроса
+		payload := httplog.NewRequestPayload(r, "")
+		logDone := make(chan string, 1)
+
+		// Запускаем фоновую горутину записи лога в файл
+		go func(p *httplog.RequestPayload) {
+			logCtx, logCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer logCancel()
+
+			// Ожидаем целевой URL из основного потока
+			p.TargetURL = <-logDone
+			_ = rotator.Write(logCtx, p)
+		}(payload)
+
 		id := converter.ConvertToInt(code)
-		// Ищем в кэше, если нет — в Supabase
+
+		// Проверяем наличие в RAM-кэше
 		originalURL, ok := resolver.Get(id)
 		if !ok {
-			if l, err := repo.GetLinkByID(r.Context(), id); err == nil {
-				if !l.IsDeleted {
-					resolver.Put(id, l.OriginalURL)
-					http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
-				}
+			// Если нет в кэше — загружаем из PostgreSQL
+			l, err := repo.GetLinkByID(r.Context(), id)
+			if err != nil || l.IsDeleted {
+				logDone <- "" // Передаем пустой target, если ссылка не найдена
+				http.Error(w, "Link not found or expired", http.StatusNotFound)
+				return
 			}
 
-			http.Error(w, "Link not found or expired", http.StatusNotFound)
-			return
+			originalURL = l.OriginalURL
+			resolver.Put(id, originalURL)
 		}
 
+		// Передаем итоговый URL в фоновую горутину логирования
+		logDone <- originalURL
+
+		// Отправляем редирект клиенту
 		http.Redirect(w, r, originalURL, http.StatusTemporaryRedirect)
 	})
 
-	// 4. Запуск сервера с таймаутами для защиты от зависших соединений
+	// 6. Настройка и запуск HTTP-сервера
 	server := &http.Server{
 		Addr:         ":8081",
 		Handler:      mux,
@@ -79,11 +131,20 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	log.Println("Redirect service started on :8081")
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Server failed: %v", err)
-	}
+	go func() {
+		log.Println("Redirect service started on :8081")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
 
+	// Ожидание сигналов завершения процесса
 	<-ctx.Done()
-	defer cf()
+	log.Println("Shutting down redirect service...")
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Server forced shutdown error: %v", err)
+	}
 }

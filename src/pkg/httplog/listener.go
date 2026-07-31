@@ -2,6 +2,7 @@ package httplog
 
 import (
 	"context"
+	"encoding/gob"
 	"fmt"
 	"io"
 	"net"
@@ -15,7 +16,6 @@ type SocketListener struct {
 	handler    HandlerFunc
 }
 
-// NewSocketListener -
 func NewSocketListener(socketPath string, handler HandlerFunc) *SocketListener {
 	return &SocketListener{
 		socketPath: socketPath,
@@ -36,6 +36,7 @@ func (l *SocketListener) ListenAndServe(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()
+		_ = os.Remove(l.socketPath)
 	}()
 
 	for {
@@ -56,8 +57,16 @@ func (l *SocketListener) ListenAndServe(ctx context.Context) error {
 func (l *SocketListener) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
+	dec := gob.NewDecoder(conn)
+
 	for {
-		payload, err := ReadPayloadContext(ctx, conn)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		payload, err := ReadPayload(dec)
 		if err == io.EOF {
 			return
 		}

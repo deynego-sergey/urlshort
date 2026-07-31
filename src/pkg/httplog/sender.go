@@ -2,6 +2,7 @@ package httplog
 
 import (
 	"context"
+	"encoding/gob"
 	"fmt"
 	"io"
 	"net"
@@ -17,7 +18,6 @@ type SocketSender struct {
 	retryDelay time.Duration
 }
 
-// NewSocketSender -
 func NewSocketSender(socketPath, logDir string) *SocketSender {
 	return &SocketSender{
 		socketPath: socketPath,
@@ -27,11 +27,14 @@ func NewSocketSender(socketPath, logDir string) *SocketSender {
 }
 
 func (s *SocketSender) Start(ctx context.Context) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
+		case <-ticker.C:
 			if err := s.processReadyFiles(ctx); err != nil {
 				time.Sleep(s.retryDelay)
 			}
@@ -39,7 +42,6 @@ func (s *SocketSender) Start(ctx context.Context) {
 	}
 }
 
-// processReadyFiles -
 func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 	matches, err := filepath.Glob(filepath.Join(s.logDir, "*.ready"))
 	if err != nil {
@@ -47,7 +49,6 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 	}
 
 	if len(matches) == 0 {
-		time.Sleep(200 * time.Millisecond)
 		return nil
 	}
 
@@ -55,15 +56,20 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 
 	conn, err := net.Dial("unix", s.socketPath)
 	if err != nil {
-		// Сокет недоступен. Файлы накапливаются на диске до восстановления.
 		return fmt.Errorf("dial unix socket failed: %w", err)
 	}
 	defer conn.Close()
 
+	enc := gob.NewEncoder(conn)
+
 	for _, filePath := range matches {
-		if err := s.sendFile(ctx, conn, filePath); err != nil {
-			// В случае сбоя передачи файл не удаляется
-			// и вычитается заново при следующей итерации.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if err := s.sendFile(ctx, enc, filePath); err != nil {
 			return err
 		}
 		if err := os.Remove(filePath); err != nil {
@@ -74,16 +80,23 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 	return nil
 }
 
-// sendFile -
-func (s *SocketSender) sendFile(ctx context.Context, conn net.Conn, filePath string) error {
+func (s *SocketSender) sendFile(ctx context.Context, enc *gob.Encoder, filePath string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open ready file failed: %w", err)
 	}
 	defer file.Close()
 
+	dec := gob.NewDecoder(file)
+
 	for {
-		payload, err := ReadPayloadContext(ctx, file)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		payload, err := ReadPayload(dec)
 		if err == io.EOF {
 			break
 		}
@@ -91,7 +104,7 @@ func (s *SocketSender) sendFile(ctx context.Context, conn net.Conn, filePath str
 			return fmt.Errorf("read payload from ready file failed: %w", err)
 		}
 
-		if err := WritePayloadContext(ctx, conn, payload); err != nil {
+		if err := WritePayload(enc, payload); err != nil {
 			return fmt.Errorf("write payload to socket failed: %w", err)
 		}
 	}
