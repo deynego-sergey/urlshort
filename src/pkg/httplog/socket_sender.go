@@ -17,6 +17,7 @@ type SocketSender struct {
 	retryDelay time.Duration
 }
 
+// NewSocketSender -
 func NewSocketSender(socketPath, logDir string) *SocketSender {
 	return &SocketSender{
 		socketPath: socketPath,
@@ -38,6 +39,7 @@ func (s *SocketSender) Start(ctx context.Context) {
 	}
 }
 
+// processReadyFiles -
 func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 	matches, err := filepath.Glob(filepath.Join(s.logDir, "*.ready"))
 	if err != nil {
@@ -72,6 +74,7 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 	return nil
 }
 
+// sendFile -
 func (s *SocketSender) sendFile(ctx context.Context, conn net.Conn, filePath string) error {
 	file, err := os.Open(filePath)
 	if err != nil {

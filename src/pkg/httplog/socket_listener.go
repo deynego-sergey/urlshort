@@ -15,6 +15,7 @@ type SocketListener struct {
 	handler    HandlerFunc
 }
 
+// NewSocketListener -
 func NewSocketListener(socketPath string, handler HandlerFunc) *SocketListener {
 	return &SocketListener{
 		socketPath: socketPath,

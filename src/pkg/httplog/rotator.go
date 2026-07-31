@@ -88,6 +88,7 @@ func (r *FileRotator) Write(ctx context.Context, p *RequestPayload) error {
 	return nil
 }
 
+// rotateLocked -
 func (r *FileRotator) rotateLocked() error {
 	if r.currentFile != nil {
 		_ = r.currentFile.Close()
@@ -101,6 +102,7 @@ func (r *FileRotator) rotateLocked() error {
 	return r.openActiveFile()
 }
 
+// ForceRotate -
 func (r *FileRotator) ForceRotate() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

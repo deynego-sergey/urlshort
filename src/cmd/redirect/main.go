@@ -4,10 +4,12 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 	"urlshort/internal/repository/cache"
 	"urlshort/internal/repository/link"
 	"urlshort/pkg/database/pg"
+	"urlshort/pkg/httplog"
 	"urlshort/pkg/utils"
 	//"yourproject/repository"
 	//"yourproject/services"
@@ -32,8 +34,12 @@ func main() {
 
 	// 2. Инициализация легковесного кэша (кэш живет в RAM вашего сервера)
 	resolver := cache.NewCache()
-
 	converter := utils.NewConverter(utils.GetAlphabetString())
+
+	unix_sock := os.Getenv("UNIX_SOCKET")
+	log_dir := os.Getenv("LOG_DIR")
+	ssender := httplog.NewSocketSender(unix_sock, log_dir)
+	//
 
 	// 3. Создаем стандартный роутер Go 1.22+
 	mux := http.NewServeMux()
@@ -42,6 +48,7 @@ func main() {
 	mux.HandleFunc("GET /{sh}", func(w http.ResponseWriter, r *http.Request) {
 		code := r.PathValue("sh")
 		if code == "" {
+			ssender.Start(r.Context())
 			http.Error(w, "Bad Request", http.StatusBadRequest)
 			return
 		}
@@ -66,13 +73,13 @@ func main() {
 
 	// 4. Запуск сервера с таймаутами для защиты от зависших соединений
 	server := &http.Server{
-		Addr:         ":8080",
+		Addr:         ":8081",
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 
-	log.Println("Redirect service started on :8080")
+	log.Println("Redirect service started on :8081")
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

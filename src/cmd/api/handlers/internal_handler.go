@@ -147,7 +147,7 @@ func (h *InternalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// statistic for link - full info
 	case "stat.full":
 		h.handleFullLinkStat(w, r, router.Data)
-	// statistic for user by links
+	// statistic for userstate total
 	case "stat.user":
 		h.handleUserState(w, r, router.Data)
 

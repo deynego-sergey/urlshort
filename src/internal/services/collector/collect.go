@@ -21,6 +21,7 @@ type Collector struct {
 	cancel     context.CancelFunc
 }
 
+// NewCollector -
 func NewCollector(repo stats.IStatsRepository, cfg CollectorConfig) *Collector {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 500
