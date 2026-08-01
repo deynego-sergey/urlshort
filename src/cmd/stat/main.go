@@ -7,10 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-	"urlshort/internal/services/collector"
-
 	"urlshort/internal/repository/mongo/stats"
-
+	"urlshort/internal/services/collector"
 	"urlshort/pkg/database/mongoatlas"
 )
 

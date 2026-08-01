@@ -13,7 +13,7 @@ type Client struct {
 	dbName string
 }
 
-func NewClient(ctx context.Context, cfg Config) (*Client, error) {
+func NewClient(ctx context.Context, cfg *Config) (*Client, error) {
 	opts := options.Client().ApplyURI(cfg.URI)
 	client, err := mongo.Connect(opts)
 	if err != nil {

@@ -17,7 +17,7 @@ func NewConverter(alphabet string) *Converter {
 
 // ConvertToStr -
 func (c *Converter) ConvertToStr(n int64) string {
-	if c.base < 1 {
+	if c.base < 0 {
 		log.Fatal(errors.New("l is less than 1"))
 	}
 	if n == 0 {
@@ -39,7 +39,7 @@ func (c *Converter) ConvertToInt(s string) int64 {
 	length := len(s)
 	for i := 0; i < length; i++ {
 		idx := strings.IndexByte(c.alphabet, s[i])
-		if idx == -1 {
+		if idx < 0 {
 			panic(idx)
 		}
 		result = result*c.base + int64(idx)

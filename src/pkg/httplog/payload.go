@@ -16,6 +16,7 @@ type RequestPayload struct {
 	RequestURI    string              `gob:"request_uri"`
 	Proto         string              `gob:"proto"`
 	RemoteAddr    string              `gob:"remote_addr"`
+	Referrer      string              `gob:"referer"`
 	Header        map[string][]string `gob:"header"`
 	URLScheme     string              `gob:"url_scheme"`
 	URLHost       string              `gob:"url_host"`

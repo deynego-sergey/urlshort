@@ -21,11 +21,13 @@ func StartSocketAdapter(ctx context.Context, socketPath string, coll *collector.
 
 		// Преобразуем RequestPayload из пакета httplog в StatUpdate для репозитория
 		statUpdate := stats.StatUpdate{
-			SourceURL:   payload.URLPath,
-			TargetURL:   payload.TargetURL,
-			Timestamp:   payload.Timestamp,
-			Referrer:    payload.Referer(),
-			VisitorHash: payload.ClientIP,
+			httplog.RequestPayload{
+				RequestURI: payload.URLPath,
+				TargetURL:  payload.TargetURL,
+				Timestamp:  payload.Timestamp,
+				Referrer:   payload.Referer(),
+				RemoteAddr: payload.ClientIP,
+			},
 		}
 
 		// Отправляем событие в накопитель
