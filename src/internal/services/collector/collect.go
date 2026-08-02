@@ -92,6 +92,8 @@ func (c *Collector) flush(ctx context.Context, batch []stats.StatUpdate) {
 		return
 	}
 
+	log.Printf("[DEBUG] Collector flushing batch of %d items", len(batch))
+
 	if err := c.repo.BulkUpsert(ctx, batch); err != nil {
 		log.Printf("collector error flushing stats: %v\n", err)
 	}

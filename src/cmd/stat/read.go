@@ -2,33 +2,37 @@ package main
 
 import (
 	"context"
-	//"logac"
-	"urlshort/internal/services/collector"
+	"log"
 
 	"urlshort/internal/repository/mongo/stats"
-	//"urlshort/pkg/collector"
+	"urlshort/internal/services/collector"
 	"urlshort/pkg/httplog"
 )
 
-// StartSocketAdapter запускаетhttplog.SocketListener, который читает события из сокета
+// StartSocketAdapter запускает httplog.SocketListener, который читает события из сокета
 // и отправляет их в Collector.
 func StartSocketAdapter(ctx context.Context, socketPath string, coll *collector.Collector) error {
 	handler := func(ctx context.Context, payload *httplog.RequestPayload) error {
+		if payload == nil {
+			return nil
+		}
+
 		// Игнорируем логи без целевого URL (например, 404 ошибки)
 		if payload.TargetURL == "" {
 			return nil
 		}
 
-		// Преобразуем RequestPayload из пакета httplog в StatUpdate для репозитория
-		statUpdate := stats.StatUpdate{
-			httplog.RequestPayload{
-				RequestURI: payload.URLPath,
-				TargetURL:  payload.TargetURL,
-				Timestamp:  payload.Timestamp,
-				Referrer:   payload.Referer(),
-				RemoteAddr: payload.ClientIP,
-			},
+		// Проверяем наличие URLPath (если по какой-то причине пуст, берем RequestURI)
+		if payload.URLPath == "" && payload.RequestURI != "" {
+			payload.URLPath = payload.RequestURI
 		}
+
+		// Передаем весь полученный payload без потери полей
+		statUpdate := stats.StatUpdate{
+			RequestPayload: *payload,
+		}
+
+		log.Printf("[DEBUG] Pushing stat update to collector: path=%s, target=%s", payload.URLPath, payload.TargetURL)
 
 		// Отправляем событие в накопитель
 		coll.Push(statUpdate)

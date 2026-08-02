@@ -4,6 +4,7 @@ package stats
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -68,7 +69,6 @@ func (r *MongoStatsRepository) GetBySourceURLs(ctx context.Context, sourceURLs [
 	return stats, nil
 }
 
-// AggregatedUpdate хранит свернутые в памяти метрики по одному source_url
 type AggregatedUpdate struct {
 	SourceURL         string
 	TargetURL         string
@@ -86,12 +86,14 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 		return nil
 	}
 
+	log.Printf("[DEBUG] BulkUpsert received %d raw updates", len(updates))
+
 	aggregatedMap := make(map[string]*AggregatedUpdate)
 
-	// 1. Пред-агрегация батча в памяти
 	for _, update := range updates {
 		sourceURL := update.URLPath
 		if sourceURL == "" {
+			log.Printf("[WARN] Skipping update: URLPath is empty! Payload: %+v", update)
 			continue
 		}
 
@@ -122,27 +124,26 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 			agg.EarliestTimestamp = update.Timestamp
 		}
 
-		// Посуточная статистика ("YYYY-MM-DD")
 		dayKey := update.Timestamp.Format("2006-01-02")
 		agg.DailyStats[dayKey]++
 
-		// 15-минутные интервалы и дни недели
 		idx15min := (update.Timestamp.Hour()*60 + update.Timestamp.Minute()) / 15
 		idxDayOfWeek := (int(update.Timestamp.Weekday()) + 6) % 7
 		agg.ClicksBy15min[idx15min]++
 		agg.ClicksByDayOfWeek[idxDayOfWeek]++
 
-		// Обработка Referer
 		if ref := sanitizeReferrer(update.Referer()); ref != "" {
 			agg.Referrers[ref]++
 		}
 	}
 
+	log.Printf("[DEBUG] Prepared %d aggregated models for Mongo", len(aggregatedMap))
+
 	if len(aggregatedMap) == 0 {
+		log.Println("[WARN] aggregatedMap is empty, nothing to write to Mongo")
 		return nil
 	}
 
-	// 2. Формирование запросов в MongoDB
 	models := make([]mongo.WriteModel, 0, len(aggregatedMap))
 
 	for sourceURL, agg := range aggregatedMap {
@@ -191,10 +192,14 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 	}
 
 	opts := options.BulkWrite().SetOrdered(false)
-	_, err := r.coll.BulkWrite(ctx, models, opts)
+	res, err := r.coll.BulkWrite(ctx, models, opts)
 	if err != nil {
+		log.Printf("[ERROR] Mongo BulkWrite error: %v", err)
 		return fmt.Errorf("failed to execute bulk upsert: %w", err)
 	}
+
+	log.Printf("[SUCCESS] Mongo BulkWrite inserted: %d, modified: %d, upserted: %d",
+		res.InsertedCount, res.ModifiedCount, res.UpsertedCount)
 
 	return nil
 }
