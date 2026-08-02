@@ -4,10 +4,7 @@ package stats
 import (
 	"context"
 	"fmt"
-	"log"
-	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"urlshort/pkg/database/mongoatlas"
@@ -17,10 +14,24 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+type AggregatedUpdate struct {
+	SourceURL         string
+	TargetURL         string
+	TotalClicks       int64
+	LastClickedAt     time.Time
+	EarliestTimestamp time.Time
+	DailyStats        map[string]int64
+	ClicksBy15min     map[int]int64
+	ClicksByDayOfWeek map[int]int64
+	Referrers         map[string]int64
+	Countries         map[string]int64
+	Devices           map[string]int64
+}
+
 type IStatsRepository interface {
 	GetBySourceURL(ctx context.Context, sourceURL string) (*RedirectStat, error)
 	GetBySourceURLs(ctx context.Context, sourceURLs []string) ([]RedirectStat, error)
-	BulkUpsert(ctx context.Context, updates []StatUpdate) error
+	BulkUpsertAggregated(ctx context.Context, aggregatedMap map[string]*AggregatedUpdate) error
 }
 
 type MongoStatsRepository struct {
@@ -69,82 +80,7 @@ func (r *MongoStatsRepository) GetBySourceURLs(ctx context.Context, sourceURLs [
 	return stats, nil
 }
 
-type AggregatedUpdate struct {
-	SourceURL         string
-	TargetURL         string
-	TotalClicks       int64
-	LastClickedAt     time.Time
-	EarliestTimestamp time.Time
-	DailyStats        map[string]int64
-	ClicksBy15min     map[int]int64
-	ClicksByDayOfWeek map[int]int64
-	Referrers         map[string]int64
-}
-
-func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpdate) error {
-
-	log.Println("[DEBUG] BulkUpsert start")
-	if len(updates) == 0 {
-		return nil
-	}
-
-	aggregatedMap := make(map[string]*AggregatedUpdate)
-
-	for _, update := range updates {
-		// Оцениваем sourceURL из всех доступных полей RequestPayload
-		sourceURL := update.URLPath
-		if sourceURL == "" {
-			sourceURL = update.RequestURI
-		}
-		if sourceURL == "" {
-			continue
-		}
-
-		agg, exists := aggregatedMap[sourceURL]
-		if !exists {
-			agg = &AggregatedUpdate{
-				SourceURL:         sourceURL,
-				TargetURL:         update.TargetURL,
-				LastClickedAt:     update.Timestamp,
-				EarliestTimestamp: update.Timestamp,
-				DailyStats:        make(map[string]int64),
-				ClicksBy15min:     make(map[int]int64),
-				ClicksByDayOfWeek: make(map[int]int64),
-				Referrers:         make(map[string]int64),
-			}
-			aggregatedMap[sourceURL] = agg
-		}
-
-		agg.TotalClicks++
-
-		if update.Timestamp.After(agg.LastClickedAt) {
-			agg.LastClickedAt = update.Timestamp
-			if update.TargetURL != "" {
-				agg.TargetURL = update.TargetURL
-			}
-		}
-		if update.Timestamp.Before(agg.EarliestTimestamp) {
-			agg.EarliestTimestamp = update.Timestamp
-		}
-
-		dayKey := update.Timestamp.Format("2006-01-02")
-		agg.DailyStats[dayKey]++
-
-		idx15min := (update.Timestamp.Hour()*60 + update.Timestamp.Minute()) / 15
-		idxDayOfWeek := (int(update.Timestamp.Weekday()) + 6) % 7
-		agg.ClicksBy15min[idx15min]++
-		agg.ClicksByDayOfWeek[idxDayOfWeek]++
-
-		// Проверяем реферер и из метода, и из поля
-		ref := update.Referer()
-		if ref == "" {
-			ref = update.Referrer
-		}
-		if sanitized := sanitizeReferrer(ref); sanitized != "" {
-			agg.Referrers[sanitized]++
-		}
-	}
-
+func (r *MongoStatsRepository) BulkUpsertAggregated(ctx context.Context, aggregatedMap map[string]*AggregatedUpdate) error {
 	if len(aggregatedMap) == 0 {
 		return nil
 	}
@@ -169,6 +105,12 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 		}
 		for ref, count := range agg.Referrers {
 			incDoc = append(incDoc, bson.E{Key: "referrers." + ref, Value: count})
+		}
+		for country, count := range agg.Countries {
+			incDoc = append(incDoc, bson.E{Key: "countries." + country, Value: count})
+		}
+		for device, count := range agg.Devices {
+			incDoc = append(incDoc, bson.E{Key: "devices." + device, Value: count})
 		}
 
 		setDoc := bson.D{
@@ -203,17 +145,4 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 	}
 
 	return nil
-}
-
-func sanitizeReferrer(rawRef string) string {
-	if rawRef == "" {
-		return ""
-	}
-	parsed, err := url.Parse(rawRef)
-	if err == nil && parsed.Host != "" {
-		rawRef = parsed.Host
-	}
-	rawRef = strings.ReplaceAll(rawRef, ".", "_")
-	rawRef = strings.ReplaceAll(rawRef, "$", "_")
-	return rawRef
 }
