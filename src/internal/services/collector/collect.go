@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 	"time"
+
 	"urlshort/internal/repository/mongo/stats"
 )
 
@@ -22,7 +23,7 @@ type Collector struct {
 	cancel     context.CancelFunc
 }
 
-// NewCollector -
+// NewCollector создает экземпляр накопителя событий
 func NewCollector(repo stats.IStatsRepository, cfg CollectorConfig) *Collector {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 500
@@ -47,7 +48,12 @@ func (c *Collector) Start(ctx context.Context) {
 }
 
 func (c *Collector) Push(event stats.StatUpdate) {
-	c.eventsChan <- event
+	select {
+	case c.eventsChan <- event:
+		log.Printf("[COLLECTOR PUSH OK] Event queued: %s", event.URLPath)
+	default:
+		log.Printf("[COLLECTOR WARN] Buffer full, dropped event: %s", event.URLPath)
+	}
 }
 
 func (c *Collector) worker(ctx context.Context) {
@@ -61,11 +67,13 @@ func (c *Collector) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			log.Printf("[COLLECTOR SHUTDOWN] Context done, flushing %d items", len(batch))
 			c.flush(context.Background(), batch)
 			return
 
 		case event, ok := <-c.eventsChan:
 			if !ok {
+				log.Printf("[COLLECTOR SHUTDOWN] Channel closed, flushing %d items", len(batch))
 				c.flush(context.Background(), batch)
 				return
 			}
@@ -73,12 +81,14 @@ func (c *Collector) worker(ctx context.Context) {
 			batch = append(batch, event)
 
 			if len(batch) >= c.cfg.BatchSize {
+				log.Printf("[COLLECTOR FLUSH] Batch limit reached (%d items)", len(batch))
 				c.flush(ctx, batch)
 				batch = make([]stats.StatUpdate, 0, c.cfg.BatchSize)
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
+				log.Printf("[COLLECTOR FLUSH] Timer triggered (%d items)", len(batch))
 				c.flush(ctx, batch)
 				batch = make([]stats.StatUpdate, 0, c.cfg.BatchSize)
 			}
@@ -88,14 +98,15 @@ func (c *Collector) worker(ctx context.Context) {
 
 func (c *Collector) flush(ctx context.Context, batch []stats.StatUpdate) {
 	if len(batch) == 0 {
-		log.Printf("collector flush: nothing to flush")
 		return
 	}
 
-	log.Printf("[DEBUG] Collector flushing batch of %d items", len(batch))
+	log.Printf("[COLLECTOR EXEC] Flushing batch of %d items to Repo", len(batch))
 
 	if err := c.repo.BulkUpsert(ctx, batch); err != nil {
-		log.Printf("collector error flushing stats: %v\n", err)
+		log.Printf("[COLLECTOR ERROR] Error flushing stats: %v\n", err)
+	} else {
+		log.Printf("[COLLECTOR SUCCESS] Flushed %d items to Repo", len(batch))
 	}
 }
 

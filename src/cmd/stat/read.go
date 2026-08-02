@@ -19,7 +19,8 @@ func StartSocketAdapter(ctx context.Context, socketPath string, coll *collector.
 
 		// Игнорируем логи без целевого URL (например, 404 ошибки)
 		if payload.TargetURL == "" {
-			return nil
+			payload.TargetURL = "unknown"
+			//return nil
 		}
 
 		// Проверяем наличие URLPath (если по какой-то причине пуст, берем RequestURI)

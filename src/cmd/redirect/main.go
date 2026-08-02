@@ -60,7 +60,7 @@ func main() {
 	// 4. Инициализация параметров и структуры логирования (FileRotator + SocketSender)
 	unixSock := getEnvOrDefault("UNIX_SOCKET", "/tmp/stats.sock")
 	logDir := getEnvOrDefault("LOG_DIR", "./logs/httplog")
-	maxLogSizeBytes := getEnvInt64OrDefault("LOG_MAX_SIZE_BYTES", 10*1024*1024) // 10 MB по умолчанию
+	maxLogSizeBytes := getEnvInt64OrDefault("LOG_MAX_SIZE_BYTES", 1*100*1024) //  100 kb  //10 MB по умолчанию
 
 	rotator, err := httplog.NewFileRotator(logDir, maxLogSizeBytes)
 	if err != nil {

@@ -82,18 +82,21 @@ type AggregatedUpdate struct {
 }
 
 func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpdate) error {
+
+	log.Println("[DEBUG] BulkUpsert start")
 	if len(updates) == 0 {
 		return nil
 	}
 
-	log.Printf("[DEBUG] BulkUpsert received %d raw updates", len(updates))
-
 	aggregatedMap := make(map[string]*AggregatedUpdate)
 
 	for _, update := range updates {
+		// Оцениваем sourceURL из всех доступных полей RequestPayload
 		sourceURL := update.URLPath
 		if sourceURL == "" {
-			log.Printf("[WARN] Skipping update: URLPath is empty! Payload: %+v", update)
+			sourceURL = update.RequestURI
+		}
+		if sourceURL == "" {
 			continue
 		}
 
@@ -132,15 +135,17 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 		agg.ClicksBy15min[idx15min]++
 		agg.ClicksByDayOfWeek[idxDayOfWeek]++
 
-		if ref := sanitizeReferrer(update.Referer()); ref != "" {
-			agg.Referrers[ref]++
+		// Проверяем реферер и из метода, и из поля
+		ref := update.Referer()
+		if ref == "" {
+			ref = update.Referrer
+		}
+		if sanitized := sanitizeReferrer(ref); sanitized != "" {
+			agg.Referrers[sanitized]++
 		}
 	}
 
-	log.Printf("[DEBUG] Prepared %d aggregated models for Mongo", len(aggregatedMap))
-
 	if len(aggregatedMap) == 0 {
-		log.Println("[WARN] aggregatedMap is empty, nothing to write to Mongo")
 		return nil
 	}
 
@@ -192,14 +197,10 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 	}
 
 	opts := options.BulkWrite().SetOrdered(false)
-	res, err := r.coll.BulkWrite(ctx, models, opts)
+	_, err := r.coll.BulkWrite(ctx, models, opts)
 	if err != nil {
-		log.Printf("[ERROR] Mongo BulkWrite error: %v", err)
 		return fmt.Errorf("failed to execute bulk upsert: %w", err)
 	}
-
-	log.Printf("[SUCCESS] Mongo BulkWrite inserted: %d, modified: %d, upserted: %d",
-		res.InsertedCount, res.ModifiedCount, res.UpsertedCount)
 
 	return nil
 }
