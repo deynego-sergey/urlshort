@@ -1,10 +1,13 @@
+// src/internal/repository/mongo/stats/stats_repo.go
 package stats
 
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"urlshort/pkg/database/mongoatlas"
 
@@ -65,43 +68,112 @@ func (r *MongoStatsRepository) GetBySourceURLs(ctx context.Context, sourceURLs [
 	return stats, nil
 }
 
+// AggregatedUpdate хранит свернутые в памяти метрики по одному source_url
+type AggregatedUpdate struct {
+	SourceURL         string
+	TargetURL         string
+	TotalClicks       int64
+	LastClickedAt     time.Time
+	EarliestTimestamp time.Time
+	DailyStats        map[string]int64
+	ClicksBy15min     map[int]int64
+	ClicksByDayOfWeek map[int]int64
+	Referrers         map[string]int64
+}
+
 func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
 
-	models := make([]mongo.WriteModel, 0, len(updates))
+	aggregatedMap := make(map[string]*AggregatedUpdate)
 
+	// 1. Пред-агрегация батча в памяти
 	for _, update := range updates {
 		sourceURL := update.URLPath
-		targetURL := update.TargetURL
-		timestamp := update.Timestamp
-		referrer := update.Referer()
-
-		filter := bson.D{{Key: "source_url", Value: sourceURL}}
-
-		idx15min := (timestamp.Hour()*60 + timestamp.Minute()) / 15
-		idxDayOfWeek := (int(timestamp.Weekday()) + 6) % 7
-
-		incDoc := bson.D{
-			{Key: "total_clicks", Value: 1},
-			{Key: "clicks_by_15min." + strconv.Itoa(idx15min), Value: 1},
-			{Key: "clicks_by_day_of_week." + strconv.Itoa(idxDayOfWeek), Value: 1},
+		if sourceURL == "" {
+			continue
 		}
 
-		if referrer != "" {
-			safeReferrer := strings.ReplaceAll(referrer, ".", "_")
-			safeReferrer = strings.ReplaceAll(safeReferrer, "$", "_")
-			incDoc = append(incDoc, bson.E{Key: "referrers." + safeReferrer, Value: 1})
+		agg, exists := aggregatedMap[sourceURL]
+		if !exists {
+			agg = &AggregatedUpdate{
+				SourceURL:         sourceURL,
+				TargetURL:         update.TargetURL,
+				LastClickedAt:     update.Timestamp,
+				EarliestTimestamp: update.Timestamp,
+				DailyStats:        make(map[string]int64),
+				ClicksBy15min:     make(map[int]int64),
+				ClicksByDayOfWeek: make(map[int]int64),
+				Referrers:         make(map[string]int64),
+			}
+			aggregatedMap[sourceURL] = agg
+		}
+
+		agg.TotalClicks++
+
+		if update.Timestamp.After(agg.LastClickedAt) {
+			agg.LastClickedAt = update.Timestamp
+			if update.TargetURL != "" {
+				agg.TargetURL = update.TargetURL
+			}
+		}
+		if update.Timestamp.Before(agg.EarliestTimestamp) {
+			agg.EarliestTimestamp = update.Timestamp
+		}
+
+		// Посуточная статистика ("YYYY-MM-DD")
+		dayKey := update.Timestamp.Format("2006-01-02")
+		agg.DailyStats[dayKey]++
+
+		// 15-минутные интервалы и дни недели
+		idx15min := (update.Timestamp.Hour()*60 + update.Timestamp.Minute()) / 15
+		idxDayOfWeek := (int(update.Timestamp.Weekday()) + 6) % 7
+		agg.ClicksBy15min[idx15min]++
+		agg.ClicksByDayOfWeek[idxDayOfWeek]++
+
+		// Обработка Referer
+		if ref := sanitizeReferrer(update.Referer()); ref != "" {
+			agg.Referrers[ref]++
+		}
+	}
+
+	if len(aggregatedMap) == 0 {
+		return nil
+	}
+
+	// 2. Формирование запросов в MongoDB
+	models := make([]mongo.WriteModel, 0, len(aggregatedMap))
+
+	for sourceURL, agg := range aggregatedMap {
+		filter := bson.D{{Key: "source_url", Value: sourceURL}}
+
+		incDoc := bson.D{
+			{Key: "total_clicks", Value: agg.TotalClicks},
+		}
+
+		for day, count := range agg.DailyStats {
+			incDoc = append(incDoc, bson.E{Key: "daily_stats." + day, Value: count})
+		}
+		for idx, count := range agg.ClicksBy15min {
+			incDoc = append(incDoc, bson.E{Key: "clicks_by_15min." + strconv.Itoa(idx), Value: count})
+		}
+		for idx, count := range agg.ClicksByDayOfWeek {
+			incDoc = append(incDoc, bson.E{Key: "clicks_by_day_of_week." + strconv.Itoa(idx), Value: count})
+		}
+		for ref, count := range agg.Referrers {
+			incDoc = append(incDoc, bson.E{Key: "referrers." + ref, Value: count})
 		}
 
 		setDoc := bson.D{
-			{Key: "last_clicked_at", Value: timestamp},
-			{Key: "target_url", Value: targetURL},
+			{Key: "last_clicked_at", Value: agg.LastClickedAt},
+		}
+		if agg.TargetURL != "" {
+			setDoc = append(setDoc, bson.E{Key: "target_url", Value: agg.TargetURL})
 		}
 
 		setOnInsertDoc := bson.D{
-			{Key: "created_at", Value: timestamp},
+			{Key: "created_at", Value: agg.EarliestTimestamp},
 		}
 
 		updateDoc := bson.D{
@@ -125,4 +197,17 @@ func (r *MongoStatsRepository) BulkUpsert(ctx context.Context, updates []StatUpd
 	}
 
 	return nil
+}
+
+func sanitizeReferrer(rawRef string) string {
+	if rawRef == "" {
+		return ""
+	}
+	parsed, err := url.Parse(rawRef)
+	if err == nil && parsed.Host != "" {
+		rawRef = parsed.Host
+	}
+	rawRef = strings.ReplaceAll(rawRef, ".", "_")
+	rawRef = strings.ReplaceAll(rawRef, "$", "_")
+	return rawRef
 }
