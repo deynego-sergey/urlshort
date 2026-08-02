@@ -6,6 +6,7 @@ import (
 	"log"
 	"sync"
 	"time"
+	pipeline "urlshort/internal/services/pipelines"
 
 	"urlshort/internal/repository/mongo/stats"
 )
@@ -21,6 +22,7 @@ type Collector struct {
 	eventsChan chan stats.StatUpdate
 	wg         sync.WaitGroup
 	cancel     context.CancelFunc
+	pipeline   *pipeline.Pipeline
 }
 
 // NewCollector создает экземпляр накопителя событий
@@ -36,6 +38,7 @@ func NewCollector(repo stats.IStatsRepository, cfg CollectorConfig) *Collector {
 		repo:       repo,
 		cfg:        cfg,
 		eventsChan: make(chan stats.StatUpdate, cfg.BatchSize*2),
+		pipeline:   pipeline.NewPipeline(),
 	}
 }
 
@@ -102,8 +105,8 @@ func (c *Collector) flush(ctx context.Context, batch []stats.StatUpdate) {
 	}
 
 	log.Printf("[COLLECTOR EXEC] Flushing batch of %d items to Repo", len(batch))
-
-	if err := c.repo.BulkUpsert(ctx, batch); err != nil {
+	agg := c.pipeline.Process(batch)
+	if err := c.repo.BulkUpsertAggregated(ctx, agg); err != nil {
 		log.Printf("[COLLECTOR ERROR] Error flushing stats: %v\n", err)
 	} else {
 		log.Printf("[COLLECTOR SUCCESS] Flushed %d items to Repo", len(batch))
