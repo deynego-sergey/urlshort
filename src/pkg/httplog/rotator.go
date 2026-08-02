@@ -1,3 +1,4 @@
+// src/pkg/httplog/rotator.go
 package httplog
 
 import (
@@ -20,6 +21,7 @@ type FileRotator struct {
 	activePath   string
 }
 
+// NewFileRotator -
 func NewFileRotator(dir string, maxSizeBytes int64) (*FileRotator, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("mkdir log dir failed: %w", err)

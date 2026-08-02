@@ -1,8 +1,9 @@
+// src/internal/services/collector/collect.go
 package collector
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"sync"
 	"time"
 	"urlshort/internal/repository/mongo/stats"
@@ -87,11 +88,12 @@ func (c *Collector) worker(ctx context.Context) {
 
 func (c *Collector) flush(ctx context.Context, batch []stats.StatUpdate) {
 	if len(batch) == 0 {
+		log.Printf("collector flush: nothing to flush")
 		return
 	}
 
 	if err := c.repo.BulkUpsert(ctx, batch); err != nil {
-		fmt.Printf("collector error flushing stats: %v\n", err)
+		log.Printf("collector error flushing stats: %v\n", err)
 	}
 }
 

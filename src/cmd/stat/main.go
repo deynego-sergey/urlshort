@@ -12,7 +12,7 @@ import (
 	"urlshort/pkg/database/mongoatlas"
 )
 
-const STATISTIC_COLLECTION string = "statistic"
+const STATISTIC_COLLECTION string = "ustat"
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

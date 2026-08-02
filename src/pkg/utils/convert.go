@@ -2,6 +2,7 @@ package utils
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 )
@@ -34,15 +35,15 @@ func (c *Converter) ConvertToStr(n int64) string {
 }
 
 // ConvertToInt -
-func (c *Converter) ConvertToInt(s string) int64 {
+func (c *Converter) ConvertToInt(s string) (int64, error) {
 	var result int64 = 0
 	length := len(s)
 	for i := 0; i < length; i++ {
 		idx := strings.IndexByte(c.alphabet, s[i])
-		if idx < 0 {
-			panic(idx)
+		if idx == -1 {
+			return 0, fmt.Errorf("%w: %q", "ErrInvalidCharacte", s[i])
 		}
 		result = result*c.base + int64(idx)
 	}
-	return result
+	return result, nil
 }

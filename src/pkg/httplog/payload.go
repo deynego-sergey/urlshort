@@ -1,3 +1,4 @@
+// src/pkg/httplog/payload.go
 package httplog
 
 import (

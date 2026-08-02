@@ -79,12 +79,18 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /{sh}", func(w http.ResponseWriter, r *http.Request) {
+
 		code := r.PathValue("sh")
-		if code == "" {
-			http.Error(w, "Bad Request", http.StatusBadRequest)
+		// Игнорируем авто-запросы иконки браузером
+		if code == "favicon.ico" || code == "" {
+			http.NotFound(w, r)
 			return
 		}
-
+		id, err := converter.ConvertToInt(code)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
 		// Раннее извлечение данных: сразу снимаем метрику HTTP-запроса
 		payload := httplog.NewRequestPayload(r, "")
 		logDone := make(chan string, 1)
@@ -98,8 +104,6 @@ func main() {
 			p.TargetURL = <-logDone
 			_ = rotator.Write(logCtx, p)
 		}(payload)
-
-		id := converter.ConvertToInt(code)
 
 		// Проверяем наличие в RAM-кэше
 		originalURL, ok := resolver.Get(id)

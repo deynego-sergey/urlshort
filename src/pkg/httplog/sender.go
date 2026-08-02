@@ -1,3 +1,4 @@
+// src/pkg/httplog/sender.go
 package httplog
 
 import (
@@ -5,28 +6,69 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 )
 
 type SocketSender struct {
 	socketPath string
 	logDir     string
-	retryDelay time.Duration
+	mu         sync.RWMutex
+	clients    map[net.Conn]*gob.Encoder
 }
 
 func NewSocketSender(socketPath, logDir string) *SocketSender {
 	return &SocketSender{
 		socketPath: socketPath,
 		logDir:     logDir,
-		retryDelay: 1 * time.Second,
+		clients:    make(map[net.Conn]*gob.Encoder),
 	}
 }
 
-func (s *SocketSender) Start(ctx context.Context) {
+func (s *SocketSender) Start(ctx context.Context) error {
+	_ = os.Remove(s.socketPath)
+
+	listener, err := net.Listen("unix", s.socketPath)
+	if err != nil {
+		return fmt.Errorf("listen unix socket failed: %w", err)
+	}
+	defer listener.Close()
+	defer os.Remove(s.socketPath)
+
+	go func() {
+		<-ctx.Done()
+		_ = listener.Close()
+		_ = os.Remove(s.socketPath)
+	}()
+
+	go s.processLoop(ctx)
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+				log.Printf("accept connection failed: %v", err)
+				continue
+			}
+		}
+
+		s.mu.Lock()
+		s.clients[conn] = gob.NewEncoder(conn)
+		s.mu.Unlock()
+
+		log.Printf("client connected to socket: %s", conn.RemoteAddr())
+	}
+}
+
+func (s *SocketSender) processLoop(ctx context.Context) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -36,7 +78,7 @@ func (s *SocketSender) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if err := s.processReadyFiles(ctx); err != nil {
-				time.Sleep(s.retryDelay)
+				log.Println("error processing ready files:", err)
 			}
 		}
 	}
@@ -52,15 +94,15 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 		return nil
 	}
 
-	sort.Strings(matches)
+	s.mu.RLock()
+	clientCount := len(s.clients)
+	s.mu.RUnlock()
 
-	conn, err := net.Dial("unix", s.socketPath)
-	if err != nil {
-		return fmt.Errorf("dial unix socket failed: %w", err)
+	if clientCount == 0 {
+		return nil
 	}
-	defer conn.Close()
 
-	enc := gob.NewEncoder(conn)
+	sort.Strings(matches)
 
 	for _, filePath := range matches {
 		select {
@@ -69,10 +111,13 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 		default:
 		}
 
-		if err := s.sendFile(ctx, enc, filePath); err != nil {
+		if err := s.sendFile(ctx, filePath); err != nil {
+			log.Printf("send file %s failed: %v", filePath, err)
 			return err
 		}
+
 		if err := os.Remove(filePath); err != nil {
+			log.Printf("remove file %s failed: %v", filePath, err)
 			return fmt.Errorf("remove sent ready file failed: %w", err)
 		}
 	}
@@ -80,7 +125,7 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 	return nil
 }
 
-func (s *SocketSender) sendFile(ctx context.Context, enc *gob.Encoder, filePath string) error {
+func (s *SocketSender) sendFile(ctx context.Context, filePath string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return fmt.Errorf("open ready file failed: %w", err)
@@ -104,10 +149,21 @@ func (s *SocketSender) sendFile(ctx context.Context, enc *gob.Encoder, filePath 
 			return fmt.Errorf("read payload from ready file failed: %w", err)
 		}
 
-		if err := WritePayload(enc, payload); err != nil {
-			return fmt.Errorf("write payload to socket failed: %w", err)
-		}
+		s.broadcastPayload(payload)
 	}
 
 	return nil
+}
+
+func (s *SocketSender) broadcastPayload(p *RequestPayload) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for conn, enc := range s.clients {
+		if err := WritePayload(enc, p); err != nil {
+			log.Printf("write to client %s failed, closing connection: %v", conn.RemoteAddr(), err)
+			_ = conn.Close()
+			delete(s.clients, conn)
+		}
+	}
 }
