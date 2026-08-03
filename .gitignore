@@ -1,0 +1,4 @@
+/src/cmd/api/dist/
+/src/.env
+/src/.smtp
+/urlshortener-redirect.tar.gz
