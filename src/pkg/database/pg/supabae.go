@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -23,6 +24,9 @@ func InitSupabasePool(ctx context.Context) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse connection string: %w", err)
 	}
+
+	// Отключаем prepared statements для совместимости с PgBouncer / Supabase Pooler
+	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 	// Настройки пула для оптимизации под лимиты Supabase (особенно на Free Tier)
 	config.MaxConns = 10                      // Ограничиваем пул (у Supabase Free жесткий лимит на коннекты)

@@ -15,10 +15,14 @@ type EnrichedUpdate struct {
 	UserAgent  string
 }
 
-type Pipeline struct{}
+type Pipeline struct {
+	geoIP *GeoIPProvider
+}
 
-func NewPipeline() *Pipeline {
-	return &Pipeline{}
+func NewPipeline(geoIP *GeoIPProvider) *Pipeline {
+	return &Pipeline{
+		geoIP: geoIP,
+	}
 }
 
 // Process принимает сырые батчи от Collector, валидирует, обогащает и агрегирует их
@@ -177,8 +181,8 @@ func (p *Pipeline) extractDeviceType(headers map[string][]string) string {
 }
 
 func (p *Pipeline) extractCountryByIP(ip string) string {
-	if ip == "" || ip == "127.0.0.1" || ip == "::1" {
-		return "internal"
+	if p.geoIP == nil {
+		return "unknown"
 	}
-	return "unknown"
+	return p.geoIP.GetCountryCode(ip)
 }

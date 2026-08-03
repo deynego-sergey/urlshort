@@ -9,6 +9,7 @@ import (
 	"time"
 	"urlshort/internal/repository/mongo/stats"
 	"urlshort/internal/services/collector"
+	pipeline "urlshort/internal/services/pipelines"
 	"urlshort/pkg/database/mongoatlas"
 )
 
@@ -31,11 +32,18 @@ func main() {
 
 	repo := stats.NewMongoStatsRepository(mclient, STATISTIC_COLLECTION)
 
-	// 2. Запуск Collector для батчинга в Mongo
+	geoIP, err := pipeline.NewGeoIPProvider(os.Getenv("GEOIP_DB_PATH"))
+	if err != nil {
+		log.Fatalf("failed to init geoip: %v", err)
+	}
+	defer geoIP.Close()
+
+	pipe := pipeline.NewPipeline(geoIP)
+
 	coll := collector.NewCollector(repo, collector.CollectorConfig{
 		BatchSize:     500,
 		FlushInterval: 5 * time.Second,
-	})
+	}, pipe)
 	coll.Start(ctx)
 	defer coll.Stop()
 

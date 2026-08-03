@@ -26,7 +26,7 @@ type Collector struct {
 }
 
 // NewCollector создает экземпляр накопителя событий
-func NewCollector(repo stats.IStatsRepository, cfg CollectorConfig) *Collector {
+func NewCollector(repo stats.IStatsRepository, cfg CollectorConfig, pipe *pipeline.Pipeline) *Collector {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 500
 	}
@@ -38,7 +38,7 @@ func NewCollector(repo stats.IStatsRepository, cfg CollectorConfig) *Collector {
 		repo:       repo,
 		cfg:        cfg,
 		eventsChan: make(chan stats.StatUpdate, cfg.BatchSize*2),
-		pipeline:   pipeline.NewPipeline(),
+		pipeline:   pipe,
 	}
 }
 

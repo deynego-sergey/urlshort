@@ -1,7 +1,9 @@
+// src/cmd/api/main.go
 package main
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"log"
 	"net/http"
@@ -9,9 +11,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-	"urlshort/pkg/middleware/cors"
-	middleware "urlshort/pkg/middleware/jwtauth"
-	"urlshort/pkg/utils"
 
 	"urlshort/cmd/api/handlers"
 	"urlshort/internal/repository/link"
@@ -19,25 +18,29 @@ import (
 	"urlshort/internal/services/auth"
 	"urlshort/internal/services/notification"
 	"urlshort/pkg/database/pg"
+	"urlshort/pkg/middleware/cors"
+	middleware "urlshort/pkg/middleware/jwtauth"
+	"urlshort/pkg/utils"
 )
 
-//const alphabet = "aBcDeFgHiJkLmNoPqRsTuVwXyZ8642097531AbCdRfGhIjKlMnOpQrStUvWxYz"
+//go:embed dist/*
+var webFiles embed.FS
 
 func main() {
+	// Передаем эмбеднутые файлы в handlers
+	handlers.EmbeddedFiles = webFiles
+
 	log.Println("Starting API server...")
 
-	// 1. Контекст, завязанный напрямую на системные сигналы прерывания
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// 2. Инициализация пула Supabase с передачей контекста и обработкой ошибки
 	pool, err := pg.InitSupabasePool(ctx)
 	if err != nil {
 		log.Fatalf("Critical: failed to initialize database pool: %v", err)
 	}
 	defer pool.Close()
 
-	// 3. Инициализация слоя уведомлений
 	emailCfg, err := notification.LoadEmailConfigFromEnv()
 	if err != nil {
 		log.Fatalf("Critical boot error: %v", err)
@@ -48,27 +51,30 @@ func main() {
 	}
 	notificationService := notification.NewNotificationService(senders)
 
-	// 4. Инициализация репозиториев (передаем готовый pool)
 	userRepo := user.NewUserRepository(pool)
 	sessionRepo := user.NewSessionRepository(pool)
 	linkRepo := link.NewLinkRepository(pool)
 
-	// Потокобезопасный in-memory кэш сессий, привязанный к сигнальному контексту
 	sessionMemory := user.NewSessionMemoryStorage(ctx)
 
-	// 5. Инициализация AuthService
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
 		log.Fatal("JWT_SECRET environment variable is required")
 	}
 	authService := auth.NewAuthService(userRepo, sessionRepo, sessionMemory, notificationService, jwtSecret)
-	// 6. Маршрутизация через единый InternalHandler
+
 	internalHandler := handlers.NewInternalHandler(authService, linkRepo, utils.NewConverter(utils.GetAlphabetString()))
 
 	authMiddleware := middleware.AuthMiddleware(jwtSecret)
-	corsMiddlewarw := cors.CorsMiddleware
+	corsMiddleware := cors.CorsMiddleware
+
 	mux := http.NewServeMux()
-	mux.Handle("/v1", corsMiddlewarw(authMiddleware(internalHandler)))
+
+	// 1. Ручка API
+	mux.Handle("/v1", corsMiddleware(authMiddleware(internalHandler)))
+
+	// 2. Раздача фронтенда (все остальное отправляем в SPA)
+	mux.Handle("/", handlers.SPAHandler())
 
 	server := &http.Server{
 		Addr:         ":8080",
@@ -77,7 +83,6 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	// 7. Запуск HTTP сервера
 	go func() {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("Server listen failed: %v", err)
@@ -85,12 +90,10 @@ func main() {
 	}()
 	log.Println("Server is running on port :8080")
 
-	// 8. Ожидаем системного сигнала прерывания (блокировка)
 	<-ctx.Done()
 
 	log.Println("Shutting down server...")
 
-	// Жесткий таймаут на закрытие сетевых соединений (5 секунд)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
