@@ -106,6 +106,7 @@ func (s *AuthService) ConfirmRegistration(ctx context.Context, rawToken string) 
 
 // Login -
 func (s *AuthService) Login(ctx context.Context, username, password string) (*TokenPair, error) {
+	log.Println("AuthService.Login")
 	u, err := s.userRepo.GetByUsername(ctx, username)
 	if err != nil {
 		log.Println(err)
