@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	middleware "urlshort/pkg/middleware/jwtauth"
@@ -479,10 +480,11 @@ func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, dat
 	}
 
 	sl := make([]*link.ShortLinkGen, len(links))
+	baseLink := os.Getenv("BASE_DOMAIN")
 	for _, lnk := range links {
 		sl = append(sl, &link.ShortLinkGen{
 			ID:          lnk.ID,
-			ShortLink:   h.converter.ConvertToStr(lnk.ID),
+			ShortLink:   baseLink + h.converter.ConvertToStr(lnk.ID),
 			OriginalURL: lnk.OriginalURL,
 			UserID:      lnk.UserID,
 			IsDeleted:   lnk.IsDeleted,
