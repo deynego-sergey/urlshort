@@ -10,7 +10,7 @@ RUN go mod download
 COPY src/ .
 
 # Собираем сервис редиректа
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/redirect-server ./cmd/redirect/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/redirect-server ./cmd/redirect
 
 # === Stage 2: Runtime ===
 FROM alpine:3.19

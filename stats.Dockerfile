@@ -10,7 +10,7 @@ RUN go mod download
 COPY src/ .
 
 # Собираем сервис статистики
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/stats-server ./cmd/stats/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/stats-server ./cmd/stats
 
 # === Stage 2: Runtime ===
 FROM alpine:3.19
