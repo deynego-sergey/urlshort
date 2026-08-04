@@ -9,9 +9,6 @@ RUN go mod download
 # 2. Копируем весь исходный код Go
 COPY src/ .
 
-# 3. Копируем собранный React-фронтенд из cmd/api/dist в папку бэкенда
-COPY cmd/api/dist ./cmd/api/dist
-
 # 4. Собираем бинарник из подпапки cmd/api
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/api-server ./cmd/api
 
