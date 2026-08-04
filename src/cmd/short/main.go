@@ -1,54 +1,97 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
+	"urlshort/pkg/utils"
 
-	//"yourproject/repository"
-	//"yourproject/services"
+	"urlshort/cmd/api/handlers"
+	"urlshort/internal/repository/link"
+	"urlshort/internal/repository/user"
+	"urlshort/internal/services/auth"
+	"urlshort/internal/services/notification"
+	"urlshort/pkg/database/pg"
 )
 
 func main() {
-	// 1. Инициализация БД (Supabase) и репозитория
-	// db := initPostgres()
-	var repo repository.LinkRepository // Наша реализация с Soft Delete
+	log.Println("Starting API server...")
 
-	// 2. Инициализация легковесного кэша (кэш живет в RAM вашего сервера)
-	resolver := services.NewLinkResolverService(repo, 24*time.Hour)
+	// 1. Контекст, завязанный напрямую на системные сигналы прерывания
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	// 3. Создаем стандартный роутер Go 1.22+
+	// 2. Инициализация пула Supabase с передачей контекста и обработкой ошибки
+	pool, err := pg.InitSupabasePool(ctx)
+	if err != nil {
+		log.Fatalf("Critical: failed to initialize database pool: %v", err)
+	}
+	defer pool.Close()
+
+	// 3. Инициализация слоя уведомлений
+	emailCfg, err := notification.LoadEmailConfigFromEnv()
+	if err != nil {
+		log.Fatalf("Critical boot error: %v", err)
+	}
+
+	senders := map[notification.TargetType]notification.INotificationSender{
+		notification.TargetEmail: notification.NewEmailSender(emailCfg),
+	}
+	notificationService := notification.NewNotificationService(senders)
+
+	// 4. Инициализация репозиториев (передаем готовый pool)
+	userRepo := user.NewUserRepository(pool)
+	sessionRepo := user.NewSessionRepository(pool)
+	linkRepo := link.NewLinkRepository(pool)
+
+	// Потокобезопасный in-memory кэш сессий, привязанный к сигнальному контексту
+	sessionMemory := user.NewSessionMemoryStorage(ctx)
+
+	// 5. Инициализация AuthService
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET environment variable is required")
+	}
+	authService := auth.NewAuthService(userRepo, sessionRepo, sessionMemory, notificationService, jwtSecret)
+
+	// 6. Маршрутизация через единый InternalHandler
+	internalHandler := handlers.NewInternalHandler(authService, linkRepo, utils.NewConverter(utils.GetAlphabetString()))
+
 	mux := http.NewServeMux()
+	mux.Handle("/v1/internal", internalHandler)
 
-	// Главный и единственный эндпоинт для редиректа
-	mux.HandleFunc("GET /r/{code}", func(w http.ResponseWriter, r *http.Request) {
-		code := r.PathValue("code")
-		if code == "" {
-			http.Error(w, "Bad Request", http.StatusBadRequest)
-			return
-		}
-
-		// Ищем в кэше, если нет — в Supabase
-		originalURL, err := resolver.Resolve(r.Context(), code)
-		if err != nil {
-			http.Error(w, "Link not found or expired", http.StatusNotFound)
-			return
-		}
-
-		// Мгновенный временный редирект (302 Found)
-		http.Redirect(w, r, originalURL, http.StatusFound)
-	})
-
-	// 4. Запуск сервера с таймаутами для защиты от зависших соединений
 	server := &http.Server{
 		Addr:         ":8080",
 		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
+		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
 
-	log.Println("Redirect service started on :8080")
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	// 7. Запуск HTTP сервера
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Server listen failed: %v", err)
+		}
+	}()
+	log.Println("Server is running on port :8080")
+
+	// 8. Ожидаем системного сигнала прерывания (блокировка)
+	<-ctx.Done()
+
+	log.Println("Shutting down server...")
+
+	// Жесткий таймаут на закрытие сетевых соединений (5 секунд)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
 	}
+
+	log.Println("Server gracefully stopped.")
 }

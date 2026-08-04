@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  stats-service:
+    build:
+      context: .
+      dockerfile: stats.Dockerfile
+    image: urlshort-stats:latest
+    container_name: urlshort-stats
+    volumes:
+      # Память RAM (tmpfs) под файл Unix-сокета
+      - socket-data:/var/run/app
+    environment:
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB_NAME=${MONGO_DB_NAME}
+      - DATABASE_URL=${DATABASE_URL}
+      - UNIX_SOCKET=/var/run/app/stats.sock
+      - GEOIP_DB_PATH=${GEOIP_DB_PATH}
+    restart: unless-stopped
+
+  redirect-service:
+    build:
+      context: .
+      dockerfile: redirect.Dockerfile
+    image: urlshort-redirect:latest
+    container_name: urlshort-redirect
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      # Общий раздел RAM под сокет
+      - socket-data:/var/run/app
+      # Отдельный Volume под логи редиректора
+      - redirect-logs:/app/logs
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - UNIX_SOCKET=/var/run/app/stats.sock
+      - LOG_FILE_PATH=/app/logs/
+    depends_on:
+      - stats-service
+    restart: unless-stopped
+
+  api-service:
+    build:
+      context: .
+      dockerfile: api.Dockerfile
+    image: urlshort-api:latest
+    container_name: urlshort-api
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_FROM=${SMTP_FROM}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_USERNAME=${SMTP_USERNAME}
+    restart: unless-stopped
+
+volumes:
+  socket-data:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+  redirect-logs:

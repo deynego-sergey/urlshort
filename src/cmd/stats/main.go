@@ -1,0 +1,83 @@
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+	"urlshort/internal/repository/mongo/stats"
+	"urlshort/internal/services/collector"
+	pipeline "urlshort/internal/services/pipelines"
+	"urlshort/pkg/database/mongoatlas"
+)
+
+const STATISTIC_COLLECTION string = "ustat"
+
+func main() {
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// 1. Инициализация MongoDB Atlas
+	mc, err := mongoatlas.LoadConfigFromEnv()
+	if err != nil {
+		log.Fatalf("failed to load mongo config: %v", err)
+	}
+
+	mclient, err := mongoatlas.NewClient(ctx, mc)
+	if err != nil {
+		log.Fatalf("failed to connect to mongo atlas: %v", err)
+	}
+
+	repo := stats.NewMongoStatsRepository(mclient, STATISTIC_COLLECTION)
+
+	geoIP, err := pipeline.NewGeoIPProvider(os.Getenv("GEOIP_DB_PATH"))
+	if err != nil {
+		log.Fatalf("failed to init geoip: %v", err)
+	}
+	defer geoIP.Close()
+
+	pipe := pipeline.NewPipeline(geoIP)
+	bs, ok := os.LookupEnv("BATCH_SIZE")
+	if !ok {
+		bs = "500"
+	}
+	batchSize, err := strconv.Atoi(bs)
+	if err != nil {
+		batchSize = 500
+	}
+
+	ft, ok := os.LookupEnv("FLUSH_INTERVAL")
+	if !ok {
+		ft = "10"
+	}
+	flushInterval, err := strconv.Atoi(ft)
+	if err != nil {
+		flushInterval = 10
+	}
+	coll := collector.NewCollector(repo, collector.CollectorConfig{
+		BatchSize:     batchSize,
+		FlushInterval: time.Duration(flushInterval) * time.Second,
+	}, pipe)
+	coll.Start(ctx)
+	defer coll.Stop()
+
+	// 3. Запуск чтения Unix-сокета через httplog
+	socketPath := os.Getenv("UNIX_SOCKET")
+	if socketPath == "" {
+		socketPath = "/tmp/stats.sock"
+	}
+
+	go func() {
+		log.Printf("stats service starting listening on socket: %s", socketPath)
+		if err := StartSocketAdapter(ctx, socketPath, coll); err != nil {
+			log.Printf("socket adapter error: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("shutting down stats service...")
+}
