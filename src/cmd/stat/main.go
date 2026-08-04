@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 	"urlshort/internal/repository/mongo/stats"
@@ -16,6 +17,7 @@ import (
 const STATISTIC_COLLECTION string = "ustat"
 
 func main() {
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -39,10 +41,26 @@ func main() {
 	defer geoIP.Close()
 
 	pipe := pipeline.NewPipeline(geoIP)
+	bs, ok := os.LookupEnv("BATCH_SIZE")
+	if !ok {
+		bs = "500"
+	}
+	batchSize, err := strconv.Atoi(bs)
+	if err != nil {
+		batchSize = 500
+	}
 
+	ft, ok := os.LookupEnv("FLUSH_INTERVAL")
+	if !ok {
+		ft = "10"
+	}
+	flushInterval, err := strconv.Atoi(ft)
+	if err != nil {
+		flushInterval = 10
+	}
 	coll := collector.NewCollector(repo, collector.CollectorConfig{
-		BatchSize:     500,
-		FlushInterval: 5 * time.Second,
+		BatchSize:     batchSize,
+		FlushInterval: time.Duration(flushInterval) * time.Second,
 	}, pipe)
 	coll.Start(ctx)
 	defer coll.Stop()
