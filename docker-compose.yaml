@@ -4,32 +4,37 @@ services:
   stats-service:
     build:
       context: .
-      dockerfile: Dockerfile.stats
+      dockerfile: stats.Dockerfile
+    image: urlshort-stats:latest
     container_name: urlshort-stats
     volumes:
-      # Общая память в RAM под Unix-сокет
+      # Память RAM (tmpfs) под файл Unix-сокета
       - socket-data:/var/run/app
     environment:
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB_NAME=${MONGO_DB_NAME}
       - DATABASE_URL=${DATABASE_URL}
-      - SOCKET_PATH=/var/run/app/stats.sock
+      - UNIX_SOCKET=/var/run/app/stats.sock
+      - GEOIP_DB_PATH=${GEOIP_DB_PATH}
     restart: unless-stopped
 
   redirect-service:
     build:
       context: .
-      dockerfile: src/Dockerfile.redirect
+      dockerfile: redirect.Dockerfile
+    image: urlshort-redirect:latest
     container_name: urlshort-redirect
     ports:
-      - "8081:8081"
+      - "127.0.0.1:8081:8081"
     volumes:
-      # Монтируем тот же раздел под сокет
+      # Общий раздел RAM под сокет
       - socket-data:/var/run/app
-      # Отдельный Volume на диске под логи запросов
+      # Отдельный Volume под логи редиректора
       - redirect-logs:/app/logs
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - STATS_SOCKET_PATH=/var/run/app/stats.sock
-      - LOG_FILE_PATH=/app/logs/access.log
+      - UNIX_SOCKET=/var/run/app/stats.sock
+      - LOG_FILE_PATH=/app/logs/
     depends_on:
       - stats-service
     restart: unless-stopped
@@ -37,13 +42,19 @@ services:
   api-service:
     build:
       context: .
-      dockerfile: src/Dockerfile.api
+      dockerfile: api.Dockerfile
+    image: urlshort-api:latest
     container_name: urlshort-api
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - JWT_SECRET=${JWT_SECRET}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_FROM=${SMTP_FROM}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - SMTP_USERNAME=${SMTP_USERNAME}
     restart: unless-stopped
 
 volumes:

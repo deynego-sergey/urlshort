@@ -102,7 +102,9 @@ func main() {
 
 			// Ожидаем целевой URL из основного потока
 			p.TargetURL = <-logDone
-			_ = rotator.Write(logCtx, p)
+			if err := rotator.Write(logCtx, p); err != nil {
+				log.Println(err)
+			}
 		}(payload)
 
 		// Проверяем наличие в RAM-кэше

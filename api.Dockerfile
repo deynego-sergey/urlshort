@@ -13,7 +13,7 @@ COPY src/ .
 COPY cmd/api/dist ./cmd/api/dist
 
 # 4. Собираем бинарник из подпапки cmd/api
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/api-server ./cmd/api/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/api-server ./cmd/api
 
 # === Stage 2: Minimal Runtime ===
 FROM alpine:3.19
