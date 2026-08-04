@@ -2,3 +2,5 @@
 /src/.env
 /src/.smtp
 /urlshortener-redirect.tar.gz
+/src/cmd/api/dist/
+/.idea/
