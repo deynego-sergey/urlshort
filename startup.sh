@@ -6,4 +6,4 @@ docker load < urlshort-stats.tar.gz
 
 # 2. Запуск контейнеров из загруженных образов
 #docker compose up -d
-docker compose --env-file .env up -d
+docker compose --env-file ./src/.env up -d

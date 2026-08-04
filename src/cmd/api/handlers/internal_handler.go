@@ -481,6 +481,7 @@ func (h *InternalHandler) handleList(w http.ResponseWriter, r *http.Request, dat
 
 	sl := make([]*link.ShortLinkGen, len(links))
 	baseLink := os.Getenv("BASE_DOMAIN")
+	log.Println("Base_link:", baseLink)
 	for _, lnk := range links {
 		sl = append(sl, &link.ShortLinkGen{
 			ID:          lnk.ID,
