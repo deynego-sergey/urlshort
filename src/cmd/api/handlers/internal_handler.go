@@ -552,7 +552,7 @@ func setRefreshTokenCookie(w http.ResponseWriter, refreshToken string, ttlSecond
 	http.SetCookie(w, &http.Cookie{
 		Name:     "l100xyz",
 		Value:    refreshToken,
-		Path:     "/v1", // Ограничиваем область отправки куки только ручкой обновления
+		Path:     "/", // Ограничиваем область отправки куки только ручкой обновления
 		MaxAge:   ttlSeconds,
 		HttpOnly: true,     // Защита от XSS (JS на клиенте не сможет прочитать cookie)
 		Secure:   isProd,   // Передача только по HTTPS

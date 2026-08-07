@@ -100,16 +100,20 @@ func (c *Collector) worker(ctx context.Context) {
 }
 
 func (c *Collector) flush(ctx context.Context, batch []stats.StatUpdate) {
-	if len(batch) == 0 {
-		return
-	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[COLLECTOR PANIC] recovered in flush: %v", r)
+		}
+	}()
 
-	log.Printf("[COLLECTOR EXEC] Flushing batch of %d items to Repo", len(batch))
-	agg := c.pipeline.Process(batch)
-	if err := c.repo.BulkUpsertAggregated(ctx, agg); err != nil {
-		log.Printf("[COLLECTOR ERROR] Error flushing stats: %v\n", err)
-	} else {
-		log.Printf("[COLLECTOR SUCCESS] Flushed %d items to Repo", len(batch))
+	if len(batch) > 0 {
+		log.Printf("[COLLECTOR EXEC] Flushing batch of %d items to Repo", len(batch))
+		agg := c.pipeline.Process(batch)
+		if err := c.repo.BulkUpsertAggregated(ctx, agg); err != nil {
+			log.Printf("[COLLECTOR ERROR] Error flushing stats: %v\n", err)
+		} else {
+			log.Printf("[COLLECTOR SUCCESS] Flushed %d items to Repo", len(batch))
+		}
 	}
 }
 
