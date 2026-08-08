@@ -45,23 +45,24 @@ func NewCollector(repo stats.IStatsRepository, cfg CollectorConfig, pipe *pipeli
 func (c *Collector) Start(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
-
 	c.wg.Add(1)
 	go c.worker(ctx)
 }
 
 func (c *Collector) Push(event stats.StatUpdate) {
+	log.Printf("[COLLECTOR PUSH BEGIN] Event queued: %s", event.URLPath)
 	select {
 	case c.eventsChan <- event:
 		log.Printf("[COLLECTOR PUSH OK] Event queued: %s", event.URLPath)
 	default:
 		log.Printf("[COLLECTOR WARN] Buffer full, dropped event: %s", event.URLPath)
 	}
+	log.Printf("[COLLECTOR PUSH FINISHED] Event queued: %s", event.URLPath)
 }
 
 func (c *Collector) worker(ctx context.Context) {
 	defer c.wg.Done()
-
+	log.Printf("[COLLECTOR START] Context done, flushing %d items", c.cfg.FlushInterval)
 	ticker := time.NewTicker(c.cfg.FlushInterval)
 	defer ticker.Stop()
 
@@ -75,6 +76,7 @@ func (c *Collector) worker(ctx context.Context) {
 			return
 
 		case event, ok := <-c.eventsChan:
+
 			if !ok {
 				log.Printf("[COLLECTOR SHUTDOWN] Channel closed, flushing %d items", len(batch))
 				c.flush(context.Background(), batch)
@@ -82,7 +84,7 @@ func (c *Collector) worker(ctx context.Context) {
 			}
 
 			batch = append(batch, event)
-
+			log.Printf("[COLLECTOR APPEND] Batch size (%d items)", len(batch))
 			if len(batch) >= c.cfg.BatchSize {
 				log.Printf("[COLLECTOR FLUSH] Batch limit reached (%d items)", len(batch))
 				c.flush(ctx, batch)
@@ -90,6 +92,7 @@ func (c *Collector) worker(ctx context.Context) {
 			}
 
 		case <-ticker.C:
+			log.Println("[COLLECTOR FLUSH] Timer triggered")
 			if len(batch) > 0 {
 				log.Printf("[COLLECTOR FLUSH] Timer triggered (%d items)", len(batch))
 				c.flush(ctx, batch)

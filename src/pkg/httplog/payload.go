@@ -4,6 +4,7 @@ package httplog
 import (
 	"encoding/gob"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 )
@@ -79,6 +80,7 @@ func NewRequestPayload(r *http.Request, targetURL string) *RequestPayload {
 
 func WritePayload(enc *gob.Encoder, p *RequestPayload) error {
 	if err := enc.Encode(p); err != nil {
+		log.Println("encode error:", err)
 		return fmt.Errorf("encode payload failed: %w", err)
 	}
 	return nil
@@ -87,6 +89,7 @@ func WritePayload(enc *gob.Encoder, p *RequestPayload) error {
 func ReadPayload(dec *gob.Decoder) (*RequestPayload, error) {
 	var p RequestPayload
 	if err := dec.Decode(&p); err != nil {
+		log.Println("decode payload failed:", err)
 		return nil, err
 	}
 	return &p, nil

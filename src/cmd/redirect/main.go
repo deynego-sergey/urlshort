@@ -71,6 +71,11 @@ func main() {
 		_ = rotator.Close()
 	}()
 
+	//  КРИТИЧНО: периодическая принудительная ротация —
+	//    без неё данные могут зависать в active.log неопределённо долго,
+	//    если поток событий замедлился и лимит по размеру не достигнут
+	go rotator.RunPeriodicRotation(ctx, 5*time.Second) // подберите интервал под допустимую задержку доставки
+
 	// Запускаем воркер отправки накопившихся логов через сокет один раз при старте
 	ssender := httplog.NewSocketSender(unixSock, logDir)
 	go ssender.Start(ctx)
@@ -97,12 +102,13 @@ func main() {
 
 		// Запускаем фоновую горутину записи лога в файл
 		go func(p *httplog.RequestPayload) {
-			logCtx, logCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			logCtx, logCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer logCancel()
 
 			// Ожидаем целевой URL из основного потока
 			p.TargetURL = <-logDone
 			if err := rotator.Write(logCtx, p); err != nil {
+				log.Println("rotator error:", err)
 				log.Println(err)
 			}
 		}(payload)
