@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/gob"
 	"fmt"
+	"log"
 	"net"
 	"os"
+	"time"
 	"urlshort/internal/repository/mongo/stats"
 	"urlshort/internal/services/collector"
 )
@@ -47,8 +49,10 @@ func (l *Listener) Start(ctx context.Context) error {
 		if err != nil {
 			select {
 			case <-ctx.Done():
+
 				return nil
 			default:
+				time.Sleep(100 * time.Millisecond)
 				continue
 			}
 		}
@@ -65,6 +69,7 @@ func (l *Listener) handleConnection(conn net.Conn) {
 	for {
 		var update stats.StatUpdate
 		if err := decoder.Decode(&update); err != nil {
+			log.Printf("[ERROR handleConnection] Decode error: %s", err.Error())
 			return
 		}
 

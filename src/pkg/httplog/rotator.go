@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/gob"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -24,6 +25,7 @@ type FileRotator struct {
 // NewFileRotator -
 func NewFileRotator(dir string, maxSizeBytes int64) (*FileRotator, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Println("Error creating directory:", err)
 		return nil, fmt.Errorf("mkdir log dir failed: %w", err)
 	}
 
@@ -41,6 +43,7 @@ func NewFileRotator(dir string, maxSizeBytes int64) (*FileRotator, error) {
 	}
 
 	if err := r.openActiveFile(); err != nil {
+		log.Println("Error opening active file:", err)
 		return nil, err
 	}
 
@@ -65,6 +68,22 @@ func (r *FileRotator) openActiveFile() error {
 	return nil
 }
 
+func (r *FileRotator) RunPeriodicRotation(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := r.ForceRotate(); err != nil {
+				log.Printf("periodic rotate failed: %v", err)
+			}
+		}
+	}
+}
+
+// //
 func (r *FileRotator) Write(ctx context.Context, p *RequestPayload) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -83,6 +102,7 @@ func (r *FileRotator) Write(ctx context.Context, p *RequestPayload) error {
 
 	err := WritePayload(r.currentEnc, p)
 	if err != nil {
+		log.Println("Write payload failed:", err)
 		return err
 	}
 

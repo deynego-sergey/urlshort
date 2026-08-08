@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+const writeTimeout = 2 * time.Second
+
 type SocketSender struct {
 	socketPath string
 	logDir     string
@@ -35,6 +37,7 @@ func (s *SocketSender) Start(ctx context.Context) error {
 
 	listener, err := net.Listen("unix", s.socketPath)
 	if err != nil {
+		log.Println("Listener failed:", err)
 		return fmt.Errorf("listen unix socket failed: %w", err)
 	}
 	defer listener.Close()
@@ -56,6 +59,7 @@ func (s *SocketSender) Start(ctx context.Context) error {
 				return nil
 			default:
 				log.Printf("accept connection failed: %v", err)
+				time.Sleep(100 * time.Millisecond) // защита от busy-loop при постоянной ошибке accept
 				continue
 			}
 		}
@@ -87,6 +91,7 @@ func (s *SocketSender) processLoop(ctx context.Context) {
 func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 	matches, err := filepath.Glob(filepath.Join(s.logDir, "*.ready"))
 	if err != nil {
+		log.Println("Glob failed:", err)
 		return fmt.Errorf("glob ready files failed: %w", err)
 	}
 
@@ -94,12 +99,8 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 		return nil
 	}
 
-	s.mu.RLock()
-	clientCount := len(s.clients)
-	s.mu.RUnlock()
-
-	if clientCount == 0 {
-		return nil
+	if s.clientCount() == 0 {
+		return nil // нет клиентов — файлы остаются копиться, как и задумано
 	}
 
 	sort.Strings(matches)
@@ -111,9 +112,18 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 		default:
 		}
 
-		if err := s.sendFile(ctx, filePath); err != nil {
+		delivered, err := s.sendFile(ctx, filePath)
+		if err != nil {
 			log.Printf("send file %s failed: %v", filePath, err)
-			return err
+			return err // прерываем этот тик, файл НЕ удалён, попробуем на следующем
+		}
+
+		if !delivered {
+			// все клиенты отвалились в процессе отправки — файл не трогаем,
+			// при следующем тике либо появится клиент и файл отправится заново с начала,
+			// либо клиентов снова нет и он просто продолжит копиться
+			log.Printf("no clients left mid-send, keeping file: %s", filePath)
+			return nil
 		}
 
 		if err := os.Remove(filePath); err != nil {
@@ -125,10 +135,12 @@ func (s *SocketSender) processReadyFiles(ctx context.Context) error {
 	return nil
 }
 
-func (s *SocketSender) sendFile(ctx context.Context, filePath string) error {
+// sendFile отправляет файл целиком. Возвращает delivered=true, только если
+// файл был отправлен от начала до конца и в момент завершения был хотя бы один живой клиент.
+func (s *SocketSender) sendFile(ctx context.Context, filePath string) (delivered bool, err error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return fmt.Errorf("open ready file failed: %w", err)
+		return false, fmt.Errorf("open ready file failed: %w", err)
 	}
 	defer file.Close()
 
@@ -137,7 +149,7 @@ func (s *SocketSender) sendFile(ctx context.Context, filePath string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		default:
 		}
 
@@ -146,24 +158,61 @@ func (s *SocketSender) sendFile(ctx context.Context, filePath string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("read payload from ready file failed: %w", err)
+			return false, fmt.Errorf("read payload from ready file failed: %w", err)
 		}
 
-		s.broadcastPayload(payload)
+		if s.broadcastPayload(payload) == 0 {
+			// ни одному клиенту не удалось доставить этот payload —
+			// прекращаем отправку файла, он останется недоудалённым
+			return false, nil
+		}
 	}
 
-	return nil
+	return true, nil
 }
 
-func (s *SocketSender) broadcastPayload(p *RequestPayload) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// broadcastPayload рассылает payload всем текущим клиентам.
+// Возвращает число клиентов, которым удалось успешно отправить.
+// Сетевой I/O выполняется без удержания блокировки на всё время записи.
+func (s *SocketSender) broadcastPayload(p *RequestPayload) int {
+	s.mu.RLock()
+	snapshot := make(map[net.Conn]*gob.Encoder, len(s.clients))
+	for c, e := range s.clients {
+		snapshot[c] = e
+	}
+	s.mu.RUnlock()
 
-	for conn, enc := range s.clients {
+	if len(snapshot) == 0 {
+		return 0
+	}
+
+	var dead []net.Conn
+	delivered := 0
+
+	for conn, enc := range snapshot {
+		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		if err := WritePayload(enc, p); err != nil {
 			log.Printf("write to client %s failed, closing connection: %v", conn.RemoteAddr(), err)
 			_ = conn.Close()
-			delete(s.clients, conn)
+			dead = append(dead, conn)
+			continue
 		}
+		delivered++
 	}
+
+	if len(dead) > 0 {
+		s.mu.Lock()
+		for _, c := range dead {
+			delete(s.clients, c)
+		}
+		s.mu.Unlock()
+	}
+
+	return delivered
+}
+
+func (s *SocketSender) clientCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.clients)
 }

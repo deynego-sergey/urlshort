@@ -137,11 +137,11 @@ func (p *Pipeline) aggregate(updates []EnrichedUpdate) map[string]*stats.Aggrega
 
 func (p *Pipeline) sanitizeReferrer(rawRef string) string {
 	if rawRef == "" {
-		return ""
+		return "direct"
 	}
 	parsed, err := url.Parse(rawRef)
 	if err == nil && parsed.Host != "" {
-		rawRef = parsed.Host
+		rawRef = parsed.Host + "/" + parsed.Path
 	}
 	rawRef = strings.ReplaceAll(rawRef, ".", "_")
 	rawRef = strings.ReplaceAll(rawRef, "$", "_")

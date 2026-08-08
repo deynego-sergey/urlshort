@@ -4,6 +4,7 @@ package stats
 import (
 	"context"
 	"fmt"
+	"log"
 	"strconv"
 	"time"
 
@@ -141,6 +142,7 @@ func (r *MongoStatsRepository) BulkUpsertAggregated(ctx context.Context, aggrega
 	opts := options.BulkWrite().SetOrdered(false)
 	_, err := r.coll.BulkWrite(ctx, models, opts)
 	if err != nil {
+		log.Println("ailed to execute bulk upsert::", err)
 		return fmt.Errorf("failed to execute bulk upsert: %w", err)
 	}
 

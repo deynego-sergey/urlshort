@@ -10,12 +10,15 @@ services:
     volumes:
       # Память RAM (tmpfs) под файл Unix-сокета
       - socket-data:/var/run/app
+      # Монтируем файл с хост-машины внутрь контейнера по фиксированному пути
+      - "${GEOIP_DB_PATH}:/app/geoip/GeoLite2-City.mmdb:ro"
     environment:
       - MONGO_URI=${MONGO_URI}
       - MONGO_DB_NAME=${MONGO_DB_NAME}
       - DATABASE_URL=${DATABASE_URL}
       - UNIX_SOCKET=/var/run/app/stats.sock
-      - GEOIP_DB_PATH=${GEOIP_DB_PATH}
+      # Жестко задаем путь, где файл лежит ВНУТРИ контейнера
+      - GEOIP_DB_PATH=/app/geoip/GeoLite2-City.mmdb
     restart: unless-stopped
 
   redirect-service:
